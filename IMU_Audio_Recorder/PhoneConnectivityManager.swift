@@ -76,7 +76,7 @@ class PhoneConnectivityManager: NSObject, WCSessionDelegate {
     }
     
     func sessionDidDeactivate(_ session: WCSession) {
-        print("\(Date()): --- PHONE: Session deactivated - Reactivating ---")
+        print("\(Date()): --- PHONE: Session deactivated - Reactivating --")
         WCSession.default.activate()
     }
     func session(_ session: WCSession, didReceiveMessage message: [String : Any]) { }
