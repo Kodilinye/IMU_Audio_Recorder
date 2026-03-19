@@ -79,5 +79,16 @@ class PhoneConnectivityManager: NSObject, WCSessionDelegate {
         print("\(Date()): --- PHONE: Session deactivated - Reactivating ---")
         WCSession.default.activate()
     }
-    func session(_ session: WCSession, didReceiveMessage message: [String : Any]) { }
+    func session(_ session: WCSession, didReceiveMessage message: [String : Any]) {
+        if let action = message["action"] as? String {
+            DispatchQueue.main.async {
+                if action == "startCamera" {
+                    NotificationCenter.default.post(name: .startiPhoneCamera, object: nil)
+                } else if action == "stopCamera" {
+                    // You can create a new notification name for this
+                    NotificationCenter.default.post(name: NSNotification.Name("stopiPhoneCamera"), object: nil)
+                }
+            }
+        }
+    } // added lines in this function
 }

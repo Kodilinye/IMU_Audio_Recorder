@@ -151,6 +151,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         do {
             workoutSession = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
             workoutSession?.startActivity(with: nil)
+            WatchTrigger.remoteStartPhoneCamera() // added this line
             startDataRecording()
             isRecording = true
             startTimer()
@@ -223,6 +224,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     // This function now stops the single device motion service.
     private func stopRecording() {
         motionManager.stopDeviceMotionUpdates() // Stop the fused service
+        WCSession.default.sendMessage(["action": "stopCamera"], replyHandler: nil) // added this line
         
         if audioEngine.isRunning {
             audioEngine.stop()

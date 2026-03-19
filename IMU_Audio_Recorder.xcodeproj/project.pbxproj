@@ -345,13 +345,15 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = IMU_Audio_Recorder/IMU_Audio_Recorder.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = R3JA8K228P;
+				DEVELOPMENT_TEAM = 3N4M89V7AL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "IMU-Audio-Recorder-Info.plist";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "This app uses the camera to record video synced with Watch data.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "For background app usage";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "For saving files to phone";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "For magnetometer usage";
@@ -367,8 +369,9 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.fsilab.imuaudiorecorder;
+				PRODUCT_BUNDLE_IDENTIFIER = com.corey.imuaudiorecorder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -381,13 +384,15 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = IMU_Audio_Recorder/IMU_Audio_Recorder.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = R3JA8K228P;
+				DEVELOPMENT_TEAM = 3N4M89V7AL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "IMU-Audio-Recorder-Info.plist";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
+				INFOPLIST_KEY_NSCameraUsageDescription = "This app uses the camera to record video synced with Watch data.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "For background app usage";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "For saving files to phone";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "For magnetometer usage";
@@ -403,8 +408,9 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.fsilab.imuaudiorecorder;
+				PRODUCT_BUNDLE_IDENTIFIER = com.corey.imuaudiorecorder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -420,7 +426,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = R3JA8K228P;
+				DEVELOPMENT_TEAM = 3N4M89V7AL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "IMU-Audio-Recorder-Watch-App-Watch-App-Info.plist";
@@ -431,13 +437,13 @@
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "For microphone usage";
 				INFOPLIST_KEY_NSMotionUsageDescription = "For accel and gyro usage";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.fsilab.imuaudiorecorder;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.corey.imuaudiorecorder;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.fsilab.imuaudiorecorder.watchkitapp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.corey.imuaudiorecorder.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = watchos;
@@ -458,7 +464,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = R3JA8K228P;
+				DEVELOPMENT_TEAM = 3N4M89V7AL;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "IMU-Audio-Recorder-Watch-App-Watch-App-Info.plist";
@@ -469,13 +475,13 @@
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "For microphone usage";
 				INFOPLIST_KEY_NSMotionUsageDescription = "For accel and gyro usage";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.fsilab.imuaudiorecorder;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.corey.imuaudiorecorder;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.fsilab.imuaudiorecorder.watchkitapp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.fsilab.rish.imuaudiorecorder.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = watchos;
