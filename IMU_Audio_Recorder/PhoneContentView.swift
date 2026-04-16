@@ -10,6 +10,13 @@ struct PhoneContentView: View {
     
     @State private var showCamera = false
     @State private var isRecordingVideo = false
+    @State private var videoTimestamp: String = ""
+    
+    private func getTimestampString() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        return formatter.string(from: Date())
+    }
     
     var body: some View {
         VStack(spacing: 20) {
@@ -53,7 +60,10 @@ struct PhoneContentView: View {
         .padding()
         
         // --- START LISTENER ---
+
         .onReceive(NotificationCenter.default.publisher(for: .startiPhoneCamera)) { _ in
+            let ts = getTimestampString() // timestamp
+            self.videoTimestamp = ts // generate timestamp
             self.showCamera = true
             self.isRecordingVideo = true
         }
@@ -73,8 +83,7 @@ struct PhoneContentView: View {
         
         // --- CAMERA VIEW ---
         .fullScreenCover(isPresented: $showCamera) {
-            // This now uses the CustomVideoRecorder from your CameraManager.swift
-            CustomVideoRecorder(isRecording: $isRecordingVideo)
+            CustomVideoRecorder(isRecording: $isRecordingVideo, timestamp: videoTimestamp)
                 .ignoresSafeArea()
         }
     }

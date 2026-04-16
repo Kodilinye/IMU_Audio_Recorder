@@ -3,16 +3,17 @@ import AVFoundation
 
 struct CustomVideoRecorder: UIViewControllerRepresentable {
     @Binding var isRecording: Bool
+    var timestamp: String
 
     func makeUIViewController(context: Context) -> CameraViewController {
-        return CameraViewController()
+        return CameraViewController(timestamp: timestamp)
     }
 
     func updateUIViewController(_ uiViewController: CameraViewController, context: Context) {
         if isRecording {
-            // We give it a tiny buffer to make sure the session is actually hot
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                uiViewController.startRecording()
+
+                uiViewController.startCountdownAndRecording()
             }
         } else {
             uiViewController.stopRecording()
@@ -26,12 +27,48 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
     private var previewLayer: AVCaptureVideoPreviewLayer!
     private let recordingDot = UIView()
     private let recordingLabel = UILabel()
+    private let countdownLabel = UILabel()
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
         setupSession()
         setupRecordingIndicator()
+        setupCountdownLabel()
+    }
+    
+    private func setupCountdownLabel() {
+        countdownLabel.frame = view.bounds
+        countdownLabel.textAlignment = .center
+        countdownLabel.font = UIFont.systemFont(ofSize: 80, weight: .bold)
+        countdownLabel.textColor = .white
+        countdownLabel.alpha = 0
+        view.addSubview(countdownLabel)
+    }
+    
+    func startCountdownAndRecording() {
+        startRecording()
+        
+        var count = 5
+        countdownLabel.alpha = 1
+        
+        countdownLabel.text = "\(count)"
+        
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
+            count -= 1
+            
+            if count > 0 {
+                self.countdownLabel.text = "\(count)"
+            } else if count == 0 {
+                self.countdownLabel.text = "GO"
+            } else {
+                timer.invalidate()
+                
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.countdownLabel.alpha = 0
+                }
+            }
+        }
     }
 
     private func setupRecordingIndicator() {
@@ -62,7 +99,6 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
         
         if captureSession.canAddInput(audioInput) { captureSession.addInput(audioInput) }
         
-        // FIX 1: Added only ONCE
         if captureSession.canAddOutput(movieOutput) {
             captureSession.addOutput(movieOutput)
             print("--- PHONE: Movie Output added successfully ---")
@@ -85,8 +121,21 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
         previewLayer.frame = view.bounds
     }
 
+    
+    
+    private var timestamp: String
+
+    init(timestamp: String) {
+        self.timestamp = timestamp
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    
     func startRecording() {
-        // FIX 2: If the session isn't running yet, wait 0.5s and try again
         guard captureSession.isRunning else {
             print("--- PHONE: Session not running yet, retrying... ---")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.startRecording() }
@@ -101,8 +150,9 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
             }
         }
 
-        let fileName = "iPhoneVideo_\(Int(Date().timeIntervalSince1970)).mov"
+        let fileName = "video_\(timestamp).mov"
         let outputURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(fileName)
+
         
         print("--- PHONE: Recording starting to \(outputURL.lastPathComponent) ---")
         movieOutput.startRecording(to: outputURL, recordingDelegate: self)
@@ -111,6 +161,7 @@ class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelega
             self.recordingDot.alpha = 1
             self.recordingLabel.alpha = 1
         }
+        
     }
 
     func stopRecording() {
