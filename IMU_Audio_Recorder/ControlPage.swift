@@ -30,13 +30,14 @@ struct ControlPage: View {
 
             Button(session.isVideoRecording ? "STOP" : "START") {
                 if session.isVideoRecording {
+                    let wasPreStartCancel = (session.scheduledStartEpoch ?? 0) > Date().timeIntervalSince1970
                     session.isVideoRecording = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    connectivity.sendRecordingStop()
+                    if wasPreStartCancel {
                         session.scheduledStartEpoch = nil
                         session.sessionTimestamp = ""
                         session.filenameSuffix = ""
                     }
-                    connectivity.sendRecordingStop()
                 } else {
                     let suf = FilenameSuffixHelper.sanitize(storedSuffix)
                     storedSuffix = suf
