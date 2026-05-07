@@ -82,7 +82,8 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
 
         computeDeviceCapabilities()
         startedFromPhone = false
-        currentFilenameSuffix = ""
+        // Keep the last known suffix (typically from the phone) when starting on watch.
+        currentFilenameSuffix = sanitizeSuffix(currentFilenameSuffix)
         currentSessionTimestamp = getTimestampString()
         let epoch = Date().timeIntervalSince1970 + 5.0
         scheduledStartEpoch = epoch

@@ -108,6 +108,14 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
 
         if captureSession.canAddInput(videoInput) { captureSession.addInput(videoInput) }
 
+        // Add movie output as early as possible so video-only mode still records.
+        if captureSession.canAddOutput(movieOutput) {
+            captureSession.addOutput(movieOutput)
+            print("--- PHONE: Movie Output added successfully ---")
+        } else {
+            print("--- PHONE: Cannot add movie output ---")
+        }
+
         guard let audioDevice = AVCaptureDevice.default(for: .audio),
               let audioInput = try? AVCaptureDeviceInput(device: audioDevice) else {
             print("--- PHONE: Unable to access microphone input; continuing video-only ---")
@@ -120,12 +128,6 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
             print("--- PHONE: Cannot add microphone input; continuing video-only ---")
         }
 
-        if captureSession.canAddOutput(movieOutput) {
-            captureSession.addOutput(movieOutput)
-            print("--- PHONE: Movie Output added successfully ---")
-        } else {
-            print("--- PHONE: Cannot add movie output ---")
-        }
         setupPreviewLayerAndRun()
     }
 
@@ -161,6 +163,9 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
         }
 
         let outputURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(videoFileName())
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            try? FileManager.default.removeItem(at: outputURL)
+        }
 
         print("--- PHONE: Recording starting to \(outputURL.lastPathComponent) ---")
         movieOutput.startRecording(to: outputURL, recordingDelegate: self)
@@ -192,6 +197,9 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
         DispatchQueue.global(qos: .background).async {
             do {
                 if fileManager.fileExists(atPath: outputFileURL.path) {
+                    if fileManager.fileExists(atPath: destinationURL.path) {
+                        try fileManager.removeItem(at: destinationURL)
+                    }
                     try fileManager.moveItem(at: outputFileURL, to: destinationURL)
                     print("--- PHONE: SUCCESS! Video at: \(destinationURL.path) ---")
                     DispatchQueue.main.async {
