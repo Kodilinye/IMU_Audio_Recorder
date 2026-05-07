@@ -1,12 +1,14 @@
+// DataRecorder.swift (Using CMDeviceMotion and Your Reference Code)
+
 import AVFoundation
 import CoreMotion
 import Foundation
 import HealthKit
 import WatchConnectivity
 
-final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
-    private static let suffixDefaultsKey = "watchFilenameSuffix"
+class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
 
+    // MARK: - Properties
     private let motionManager = CMMotionManager()
     private let audioEngine = AVAudioEngine()
     private let healthStore = HKHealthStore()
@@ -17,48 +19,49 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     @Published var elapsedTime: TimeInterval = 0
     @Published var imuStatusText: String = "Sensors: "
     @Published var audioStatusText: String = "Audio: "
-    @Published var scheduledStartEpoch: TimeInterval?
-    @Published var startedFromPhone = false
-
+    
     private var timer: Timer?
-    private var scheduledStartWorkItem: DispatchWorkItem?
+    // --- SIMPLIFIED: Only one file handle is needed for all motion data ---
     private var motionFileHandle: FileHandle?
     private var audioFileHandle: FileHandle?
     private var audioFileURL: URL?
-
-    private var currentSessionTimestamp = ""
-    private var currentFilenameSuffix = ""
-
+    
     private let audioOutputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 44100, channels: 1, interleaved: false)!
 
     override init() {
         super.init()
         motionQueue.qualityOfService = .userInitiated
-
+        
         if WCSession.isSupported() {
             let session = WCSession.default
             session.delegate = self
             session.activate()
         }
-
+        
+        // Configure the single Device Motion service
         if motionManager.isDeviceMotionAvailable {
-            motionManager.deviceMotionUpdateInterval = 1.0 / 100.0
+            motionManager.deviceMotionUpdateInterval = 1.0 / 100.0 // 100 Hz
         }
-
-        currentFilenameSuffix = sanitizeSuffix(UserDefaults.standard.string(forKey: Self.suffixDefaultsKey) ?? "")
+        
         computeDeviceCapabilities()
+        
+        // Note: interruption handler is good practice but not included in this final version
+        // to match the request. Can be added back if needed.
     }
-
+    
+    // This function now checks raw sensor availability for the UI string, as requested.
     private func computeDeviceCapabilities() {
         var status = "Sensors: "
         status += motionManager.isAccelerometerAvailable ? "A" : "_"
         status += motionManager.isGyroAvailable ? "G" : "_"
         status += motionManager.isMagnetometerAvailable ? "M" : "_"
+        // We add "D" to confirm the primary service we are using is ready.
         status += motionManager.isDeviceMotionAvailable ? "D" : "_"
         imuStatusText = status
-
+        
         let sampleRate = Int(audioOutputFormat.sampleRate / 1000)
-        audioStatusText = "Audio: \(sampleRate)kHz 16-bit"
+        let bitDepth = 16
+        audioStatusText = "Audio: \(sampleRate)kHz \(bitDepth)-bit"
     }
 
     private func deleteExistingFiles() {
@@ -77,26 +80,16 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     func toggleRecording() {
-        if isRecording || scheduledStartWorkItem != nil {
-            stopRecording(sendStopCamera: true)
-            return
+        print("toggle recording called")
+        if isRecording {
+            stopRecording()
+        } else {
+            computeDeviceCapabilities() // Re-check sensors right before we start
+            // Using a slight delay can sometimes help ensure permissions are settled.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self.requestPermissionsAndStart()
+            }
         }
-
-        computeDeviceCapabilities()
-        startedFromPhone = false
-        // Keep the last known suffix (typically from the phone) when starting on watch.
-        setCurrentFilenameSuffix(currentFilenameSuffix)
-        currentSessionTimestamp = getTimestampString()
-        let epoch = Date().timeIntervalSince1970 + 5.0
-        scheduledStartEpoch = epoch
-
-        WatchTrigger.remoteStartPhoneCamera(
-            scheduledStartEpoch: epoch,
-            sessionTimestamp: currentSessionTimestamp,
-            suffix: currentFilenameSuffix
-        )
-
-        requestPermissionsAndStart(scheduledStartEpoch: epoch)
     }
     
     func sendFilesToPhone() {
@@ -128,81 +121,62 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         }
     }
     
-    private func requestPermissionsAndStart(scheduledStartEpoch: TimeInterval) {
+    private func requestPermissionsAndStart() {
+        print("request perms called")
         let workoutTypes: Set<HKSampleType> = [HKObjectType.workoutType()]
-
+        
         healthStore.requestAuthorization(toShare: workoutTypes, read: workoutTypes) { [weak self] success, error in
             guard let self = self else { return }
             if let error = error { print("HealthKit error: \(error.localizedDescription)") }
-            guard success else { return }
-
-            self.requestMicrophonePermission { [weak self] granted in
-                guard let self = self else { return }
-                guard granted else {
-                    print("Microphone permission denied")
-                    return
-                }
-                DispatchQueue.main.async {
-                    self.scheduleStart(at: scheduledStartEpoch)
+            if success {
+                AVAudioSession.sharedInstance().requestRecordPermission { [weak self] granted in
+                    guard let self = self else { return }
+                    if granted {
+                        DispatchQueue.main.async {
+                            self.startWorkoutSession()
+                        }
+                    } else {
+                        print("Microphone permission denied")
+                    }
                 }
             }
         }
     }
 
-    private func requestMicrophonePermission(completion: @escaping (Bool) -> Void) {
-        if #available(watchOS 10.0, *) {
-            AVAudioApplication.requestRecordPermission(completionHandler: completion)
-        } else {
-            AVAudioSession.sharedInstance().requestRecordPermission(completion)
-        }
-    }
-
-    private func scheduleStart(at epoch: TimeInterval) {
-        scheduledStartWorkItem?.cancel()
-
-        let delay = max(0, epoch - Date().timeIntervalSince1970)
-        let work = DispatchWorkItem { [weak self] in
-            self?.scheduledStartWorkItem = nil
-            self?.startWorkoutSession(anchorEpoch: epoch)
-        }
-        scheduledStartWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private func startWorkoutSession(anchorEpoch: TimeInterval) {
-        guard !isRecording else { return }
-
+    private func startWorkoutSession() {
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .other
         configuration.locationType = .unknown
-
+        
         do {
             workoutSession = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
             workoutSession?.startActivity(with: nil)
-            startDataRecording(timestamp: currentSessionTimestamp, suffix: currentFilenameSuffix)
+            startDataRecording()
             isRecording = true
-            startTimer(anchorEpoch: anchorEpoch)
+            startTimer()
         } catch {
             print("Workout session error: \(error.localizedDescription)")
-            stopRecording(sendStopCamera: true)
+            stopRecording()
         }
     }
-
-    private func startDataRecording(timestamp: String, suffix: String) {
-        startMotionUpdates(timestamp: timestamp, suffix: suffix)
-        startAudioRecording(timestamp: timestamp, suffix: suffix)
+    
+    // This is the main function that begins all data collection.
+    private func startDataRecording() {
+        let timestamp = getTimestampString()
+        startMotionUpdates(timestamp: timestamp) // The new, single call for IMU data
+        startAudioRecording(timestamp: timestamp)
     }
 
-    private func startMotionUpdates(timestamp: String, suffix: String) {
+    private func startMotionUpdates(timestamp: String) {
         guard motionManager.isDeviceMotionAvailable else {
             print("Device Motion service is not available.")
             return
         }
-        // Original sampling behavior: force 100 Hz at start time.
+        // Keep original sampling target explicit at start.
         motionManager.deviceMotionUpdateInterval = 1.0 / 100.0
 
         guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-        let motionFileURL = documentsURL.appendingPathComponent(makeMotionFileName(timestamp: timestamp, suffix: suffix))
+        let motionFileURL = documentsURL.appendingPathComponent("motion_\(timestamp).csv")
 
         let header = [
             "timestamp",
@@ -224,7 +198,7 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
 
         let handler: CMDeviceMotionHandler = { [weak self] (deviceMotion, error) in
             guard let self = self, let motion = deviceMotion else { return }
-            if let error {
+            if let error = error {
                 print("DeviceMotion error: \(error.localizedDescription)")
                 return
             }
@@ -250,7 +224,7 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             }
         }
 
-        // 100Hz device-motion with robust reference-frame fallback.
+        // Prefer true-north when available, fallback so IMU stream still writes rows.
         let referenceFrames = CMMotionManager.availableAttitudeReferenceFrames()
         if referenceFrames.contains(.xTrueNorthZVertical) {
             motionManager.startDeviceMotionUpdates(using: .xTrueNorthZVertical, to: motionQueue, withHandler: handler)
@@ -261,24 +235,10 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         }
     }
     
-    private func stopRecording(sendStopCamera: Bool) {
-        let hadActiveCapture = isRecording || motionFileHandle != nil || audioFileHandle != nil
-
-        scheduledStartWorkItem?.cancel()
-        scheduledStartWorkItem = nil
-
-        motionManager.stopDeviceMotionUpdates()
-
-        if sendStopCamera {
-            let stopPayload: [String: Any] = ["action": "stopCamera"]
-            WCSession.default.sendMessage(stopPayload, replyHandler: nil) { error in
-                print("Failed sending stopCamera: \(error.localizedDescription)")
-                WCSession.default.transferUserInfo(stopPayload)
-            }
-            // Also enqueue regardless of reachability to make stop reliable.
-            WCSession.default.transferUserInfo(stopPayload)
-        }
-
+    // This function now stops the single device motion service.
+    private func stopRecording() {
+        motionManager.stopDeviceMotionUpdates() // Stop the fused service
+        
         if audioEngine.isRunning {
             audioEngine.stop()
             audioEngine.inputNode.removeTap(onBus: 0)
@@ -296,21 +256,13 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         
         motionFileHandle = nil
         audioFileHandle = nil
-        audioFileURL = nil
         isRecording = false
-        scheduledStartEpoch = nil
-        startedFromPhone = false
         stopTimer()
-
-        // Auto-transfer after every completed recording so Phone page 4 updates without manual Send.
-        if hadActiveCapture {
-            sendFilesToPhone()
-        }
     }
     
-    private func startAudioRecording(timestamp: String, suffix: String) {
+    private func startAudioRecording(timestamp: String) {
         guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
-        audioFileURL = documentsURL.appendingPathComponent(makeAudioFileName(timestamp: timestamp, suffix: suffix))
+        audioFileURL = documentsURL.appendingPathComponent("audio_\(timestamp).wav")
         guard let audioFileURL = audioFileURL else { return }
         do {
             audioFileHandle = createWAVFile(url: audioFileURL)
@@ -338,7 +290,7 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             try audioEngine.start()
         } catch {
             print("Audio start error: \(error.localizedDescription)")
-            stopRecording(sendStopCamera: true)
+            stopRecording()
         }
     }
     
@@ -359,11 +311,11 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         do { try fileHandle.seek(toOffset: 0); fileHandle.write(header) } catch { print("WAV header error: \(error.localizedDescription)") }
     }
     
-    private func startTimer(anchorEpoch: TimeInterval) {
+    private func startTimer() {
         DispatchQueue.main.async {
             self.elapsedTime = 0
             self.timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-                self?.elapsedTime = Date().timeIntervalSince1970 - anchorEpoch
+                self?.elapsedTime += 0.1
             }
         }
     }
@@ -394,65 +346,7 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             DispatchQueue.main.async {
                 self.moveFileToSentDirectory(fileName: sentFileName)
             }
-            return
         }
-
-        if message["action"] != nil {
-            DispatchQueue.main.async {
-                self.handleIncomingAction(message)
-            }
-        }
-    }
-
-    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any]) {
-        if userInfo["action"] != nil {
-            DispatchQueue.main.async {
-                self.handleIncomingAction(userInfo)
-            }
-        }
-    }
-
-    private func handleIncomingAction(_ payload: [String: Any]) {
-        guard let action = payload["action"] as? String else { return }
-        switch action {
-        case "startRecording":
-            let epoch = payload["scheduledStartEpoch"] as? TimeInterval ?? (Date().timeIntervalSince1970 + 5)
-            let suffix = sanitizeSuffix(payload["suffix"] as? String ?? "")
-            let rawTs = (payload["sessionTimestamp"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            setCurrentFilenameSuffix(suffix)
-            currentSessionTimestamp = (rawTs?.isEmpty == false) ? rawTs! : getTimestampString()
-            startedFromPhone = true
-            scheduledStartEpoch = epoch
-            requestPermissionsAndStart(scheduledStartEpoch: epoch)
-        case "updateSuffix":
-            let suffix = sanitizeSuffix(payload["suffix"] as? String ?? "")
-            setCurrentFilenameSuffix(suffix)
-            print("Updated watch suffix to: \(suffix)")
-        case "stopRecording":
-            stopRecording(sendStopCamera: false)
-        default:
-            break
-        }
-    }
-
-    private func setCurrentFilenameSuffix(_ suffix: String) {
-        currentFilenameSuffix = sanitizeSuffix(suffix)
-        UserDefaults.standard.set(currentFilenameSuffix, forKey: Self.suffixDefaultsKey)
-    }
-
-    private func sanitizeSuffix(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-"))
-        return String(trimmed.unicodeScalars.filter { allowed.contains($0) })
-    }
-
-    private func makeMotionFileName(timestamp: String, suffix: String) -> String {
-        suffix.isEmpty ? "motion_\(timestamp).csv" : "motion_\(timestamp)_\(suffix).csv"
-    }
-
-    private func makeAudioFileName(timestamp: String, suffix: String) -> String {
-        suffix.isEmpty ? "audio_\(timestamp).wav" : "audio_\(timestamp)_\(suffix).wav"
     }
 
     // This is the helper function that moves a file into the "sent_files" folder.
