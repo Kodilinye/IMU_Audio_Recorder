@@ -1,47 +1,50 @@
 import SwiftUI
 
 struct PhoneContentView: View {
+    @EnvironmentObject private var session: RecordingSessionState
+    @EnvironmentObject private var connectivity: PhoneConnectivityManager
+
+    @State private var selectedPage = 1
+
     var body: some View {
-        VStack(spacing: 20) {
-            Text("IMU & Audio Recorder")
-                .font(.largeTitle)
-            Text("Companion App")
-                .font(.title2)
-                .foregroundColor(.gray)
-            Divider()
-            
-            Text("This app receives data from the watch.\nCheck the debug console in Xcode for transfer status.")
-                .multilineTextAlignment(.center)
-                .padding()
-            
-            Button("Print Documents Path") {
-                if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                    print("--- PHONE: Documents Path: \(docs.path) ---")
-                } else {
-                    print("--- PHONE: Documents directory not found ---")
-                }
-            }
-            .padding()
-            .background(Color.blue)
-            .foregroundColor(.white)
-            .cornerRadius(10)
-            
-            Button("List Received Files") {
-                if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                    do {
-                        let files = try FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil)
-                        print("--- PHONE: Received Files ---")
-                        files.forEach { print($0.lastPathComponent) }
-                    } catch {
-                        print("--- PHONE: File list error: \(error) ---")
-                    }
-                }
-            }
-            .padding()
-            .background(Color.green)
-            .foregroundColor(.white)
-            .cornerRadius(10)
+        TabView(selection: $selectedPage) {
+            StatusPage()
+                .tag(0)
+
+            ControlPage(selectedPage: $selectedPage)
+                .tag(1)
+
+            VideoPage()
+                .tag(2)
+
+            FilesPage()
+                .tag(3)
         }
-        .padding()
+        .tabViewStyle(.page)
+        .indexViewStyle(.page(backgroundDisplayMode: .always))
+        .onReceive(NotificationCenter.default.publisher(for: .startiPhoneCamera)) { note in
+            let epoch = (note.userInfo?["scheduledStartEpoch"] as? TimeInterval)
+                ?? (Date().timeIntervalSince1970 + 5)
+
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyyMMdd_HHmmss"
+
+            let rawTs = (note.userInfo?["sessionTimestamp"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            session.sessionTimestamp = (rawTs?.isEmpty == false) ? rawTs! : formatter.string(from: Date())
+            session.filenameSuffix = FilenameSuffixHelper.sanitize(note.userInfo?["suffix"] as? String ?? "")
+            session.scheduledStartEpoch = epoch
+            session.isVideoRecording = true
+
+            withAnimation {
+                selectedPage = 2
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .stopiPhoneCamera)) { _ in
+            session.isVideoRecording = false
+            session.scheduledStartEpoch = nil
+            session.sessionTimestamp = ""
+            session.filenameSuffix = ""
+        }
     }
 }
