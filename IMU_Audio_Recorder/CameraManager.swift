@@ -19,6 +19,11 @@ struct CustomVideoRecorder: UIViewControllerRepresentable {
             uiViewController.disarmRecording()
         }
     }
+
+    static func dismantleUIViewController(_ uiViewController: CameraViewController, coordinator: ()) {
+        // Ensure movie output is stopped and finalized even if SwiftUI removes this view abruptly.
+        uiViewController.disarmRecording()
+    }
 }
 
 final class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelegate {

@@ -42,9 +42,12 @@ struct PhoneContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .stopiPhoneCamera)) { _ in
             session.isVideoRecording = false
-            session.scheduledStartEpoch = nil
-            session.sessionTimestamp = ""
-            session.filenameSuffix = ""
+            // Give CameraManager time to flush .mov before tearing down context fields.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                session.scheduledStartEpoch = nil
+                session.sessionTimestamp = ""
+                session.filenameSuffix = ""
+            }
         }
     }
 }
