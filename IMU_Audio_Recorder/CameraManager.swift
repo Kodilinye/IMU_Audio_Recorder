@@ -24,7 +24,7 @@ struct CustomVideoRecorder: UIViewControllerRepresentable {
 final class CameraViewController: UIViewController, AVCaptureFileOutputRecordingDelegate {
     private let captureSession = AVCaptureSession()
     private let movieOutput = AVCaptureMovieFileOutput()
-    private var previewLayer: AVCaptureVideoPreviewLayer!
+    private var previewLayer: AVCaptureVideoPreviewLayer?
     private let recordingDot = UIView()
     private let recordingLabel = UILabel()
 
@@ -98,37 +98,40 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
 
     private func setupSession() {
         captureSession.beginConfiguration()
+        defer { captureSession.commitConfiguration() }
 
         guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
-              let videoInput = try? AVCaptureDeviceInput(device: videoDevice) else { return }
+              let videoInput = try? AVCaptureDeviceInput(device: videoDevice) else {
+            print("--- PHONE: Unable to access front camera input ---")
+            return
+        }
 
         if captureSession.canAddInput(videoInput) { captureSession.addInput(videoInput) }
 
         guard let audioDevice = AVCaptureDevice.default(for: .audio),
-              let audioInput = try? AVCaptureDeviceInput(device: audioDevice) else { return }
+              let audioInput = try? AVCaptureDeviceInput(device: audioDevice) else {
+            print("--- PHONE: Unable to access microphone input; continuing video-only ---")
+            return setupPreviewLayerAndRun()
+        }
 
-        if captureSession.canAddInput(audioInput) { captureSession.addInput(audioInput) }
+        if captureSession.canAddInput(audioInput) {
+            captureSession.addInput(audioInput)
+        } else {
+            print("--- PHONE: Cannot add microphone input; continuing video-only ---")
+        }
 
         if captureSession.canAddOutput(movieOutput) {
             captureSession.addOutput(movieOutput)
             print("--- PHONE: Movie Output added successfully ---")
+        } else {
+            print("--- PHONE: Cannot add movie output ---")
         }
-
-        captureSession.commitConfiguration()
-
-        previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
-        previewLayer.videoGravity = .resizeAspectFill
-        view.layer.insertSublayer(previewLayer, at: 0)
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.captureSession.startRunning()
-            print("--- PHONE: Capture Session is now running ---")
-        }
+        setupPreviewLayerAndRun()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        previewLayer.frame = view.bounds
+        previewLayer?.frame = view.bounds
     }
 
     private func videoFileName() -> String {
@@ -143,6 +146,11 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
         guard captureSession.isRunning else {
             print("--- PHONE: Session not running yet, retrying... ---")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.beginMovieRecording() }
+            return
+        }
+
+        guard captureSession.outputs.contains(where: { $0 === movieOutput }) else {
+            print("--- PHONE: Movie output unavailable; cannot start recording ---")
             return
         }
 
@@ -193,6 +201,22 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
             } catch {
                 print("--- PHONE: Move Failed: \(error.localizedDescription) ---")
             }
+        }
+    }
+
+    private func setupPreviewLayerAndRun() {
+        if previewLayer == nil {
+            let layer = AVCaptureVideoPreviewLayer(session: captureSession)
+            layer.videoGravity = .resizeAspectFill
+            view.layer.insertSublayer(layer, at: 0)
+            previewLayer = layer
+        } else {
+            previewLayer?.session = captureSession
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.captureSession.startRunning()
+            print("--- PHONE: Capture Session is now running ---")
         }
     }
 }
