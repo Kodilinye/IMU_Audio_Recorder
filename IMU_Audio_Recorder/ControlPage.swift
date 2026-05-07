@@ -64,7 +64,18 @@ struct ControlPage: View {
         }
         .padding()
         .onAppear {
-            session.filenameSuffix = FilenameSuffixHelper.sanitize(storedSuffix)
+            let cleaned = FilenameSuffixHelper.sanitize(storedSuffix)
+            session.filenameSuffix = cleaned
+            storedSuffix = cleaned
+            connectivity.sendSuffixUpdate(cleaned)
+        }
+        .onChange(of: storedSuffix) { newValue in
+            let cleaned = FilenameSuffixHelper.sanitize(newValue)
+            if cleaned != newValue {
+                storedSuffix = cleaned
+            }
+            session.filenameSuffix = cleaned
+            connectivity.sendSuffixUpdate(cleaned)
         }
     }
 }

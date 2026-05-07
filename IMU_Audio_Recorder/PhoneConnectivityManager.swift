@@ -71,6 +71,23 @@ final class PhoneConnectivityManager: NSObject, ObservableObject, WCSessionDeleg
         }
     }
 
+    /// Push latest suffix to watch so watch-initiated starts use current naming.
+    func sendSuffixUpdate(_ suffix: String) {
+        let cleaned = FilenameSuffixHelper.sanitize(suffix)
+        let payload: [String: Any] = ["action": "updateSuffix", "suffix": cleaned]
+
+        guard WCSession.isSupported() else { return }
+        let wc = WCSession.default
+        if wc.isReachable {
+            wc.sendMessage(payload, replyHandler: nil) { error in
+                print("sendSuffixUpdate failed, using transferUserInfo: \(error.localizedDescription)")
+                wc.transferUserInfo(payload)
+            }
+        } else {
+            wc.transferUserInfo(payload)
+        }
+    }
+
     func session(_ session: WCSession, didReceive file: WCSessionFile) {
         print("\(Date()): --- PHONE: Received file at \(file.fileURL.path) ---")
 

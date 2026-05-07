@@ -5,6 +5,7 @@ import HealthKit
 import WatchConnectivity
 
 final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
+    private static let suffixDefaultsKey = "watchFilenameSuffix"
 
     private let motionManager = CMMotionManager()
     private let audioEngine = AVAudioEngine()
@@ -44,6 +45,7 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             motionManager.deviceMotionUpdateInterval = 1.0 / 100.0
         }
 
+        currentFilenameSuffix = sanitizeSuffix(UserDefaults.standard.string(forKey: Self.suffixDefaultsKey) ?? "")
         computeDeviceCapabilities()
     }
 
@@ -83,7 +85,7 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         computeDeviceCapabilities()
         startedFromPhone = false
         // Keep the last known suffix (typically from the phone) when starting on watch.
-        currentFilenameSuffix = sanitizeSuffix(currentFilenameSuffix)
+        setCurrentFilenameSuffix(currentFilenameSuffix)
         currentSessionTimestamp = getTimestampString()
         let epoch = Date().timeIntervalSince1970 + 5.0
         scheduledStartEpoch = epoch
@@ -402,16 +404,25 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             let epoch = payload["scheduledStartEpoch"] as? TimeInterval ?? (Date().timeIntervalSince1970 + 5)
             let suffix = sanitizeSuffix(payload["suffix"] as? String ?? "")
             let rawTs = (payload["sessionTimestamp"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            currentFilenameSuffix = suffix
+            setCurrentFilenameSuffix(suffix)
             currentSessionTimestamp = (rawTs?.isEmpty == false) ? rawTs! : getTimestampString()
             startedFromPhone = true
             scheduledStartEpoch = epoch
             requestPermissionsAndStart(scheduledStartEpoch: epoch)
+        case "updateSuffix":
+            let suffix = sanitizeSuffix(payload["suffix"] as? String ?? "")
+            setCurrentFilenameSuffix(suffix)
+            print("Updated watch suffix to: \(suffix)")
         case "stopRecording":
             stopRecording(sendStopCamera: false)
         default:
             break
         }
+    }
+
+    private func setCurrentFilenameSuffix(_ suffix: String) {
+        currentFilenameSuffix = sanitizeSuffix(suffix)
+        UserDefaults.standard.set(currentFilenameSuffix, forKey: Self.suffixDefaultsKey)
     }
 
     private func sanitizeSuffix(_ raw: String) -> String {
