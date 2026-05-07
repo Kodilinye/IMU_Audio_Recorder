@@ -244,14 +244,18 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     }
     
     private func stopRecording(sendStopCamera: Bool) {
+        let hadActiveCapture = isRecording || motionFileHandle != nil || audioFileHandle != nil
+
         scheduledStartWorkItem?.cancel()
         scheduledStartWorkItem = nil
 
         motionManager.stopDeviceMotionUpdates()
 
         if sendStopCamera {
-            WCSession.default.sendMessage(["action": "stopCamera"], replyHandler: nil) { error in
+            let stopPayload: [String: Any] = ["action": "stopCamera"]
+            WCSession.default.sendMessage(stopPayload, replyHandler: nil) { error in
                 print("Failed sending stopCamera: \(error.localizedDescription)")
+                WCSession.default.transferUserInfo(stopPayload)
             }
         }
 
@@ -277,6 +281,11 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         scheduledStartEpoch = nil
         startedFromPhone = false
         stopTimer()
+
+        // Auto-transfer after every completed recording so Phone page 4 updates without manual Send.
+        if hadActiveCapture {
+            sendFilesToPhone()
+        }
     }
     
     private func startAudioRecording(timestamp: String, suffix: String) {
@@ -375,7 +384,7 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         }
     }
 
-    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any] = [:]) {
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any]) {
         if userInfo["action"] != nil {
             DispatchQueue.main.async {
                 self.handleIncomingAction(userInfo)
