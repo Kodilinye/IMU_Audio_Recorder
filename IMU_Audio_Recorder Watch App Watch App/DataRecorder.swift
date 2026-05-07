@@ -258,6 +258,8 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
                 print("Failed sending stopCamera: \(error.localizedDescription)")
                 WCSession.default.transferUserInfo(stopPayload)
             }
+            // Also enqueue regardless of reachability to make stop reliable.
+            WCSession.default.transferUserInfo(stopPayload)
         }
 
         if audioEngine.isRunning {

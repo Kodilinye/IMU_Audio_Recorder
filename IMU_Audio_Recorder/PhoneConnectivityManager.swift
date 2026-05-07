@@ -164,7 +164,7 @@ final class PhoneConnectivityManager: NSObject, ObservableObject, WCSessionDeleg
                     info["suffix"] = suffix
                 }
                 NotificationCenter.default.post(name: .startiPhoneCamera, object: nil, userInfo: info)
-            } else if action == "stopCamera" {
+            } else if action == "stopCamera" || action == "stopRecording" {
                 NotificationCenter.default.post(name: .stopiPhoneCamera, object: nil)
             }
         }
