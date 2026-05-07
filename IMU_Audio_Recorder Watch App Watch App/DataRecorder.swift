@@ -198,6 +198,8 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             print("Device Motion service is not available.")
             return
         }
+        // Original sampling behavior: force 100 Hz at start time.
+        motionManager.deviceMotionUpdateInterval = 1.0 / 100.0
 
         guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let motionFileURL = documentsURL.appendingPathComponent(makeMotionFileName(timestamp: timestamp, suffix: suffix))
@@ -220,9 +222,12 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             return
         }
 
-        // Use the start method that includes the magnetometer
-        motionManager.startDeviceMotionUpdates(using: .xTrueNorthZVertical, to: motionQueue) { [weak self] (deviceMotion, _) in
+        let handler: CMDeviceMotionHandler = { [weak self] (deviceMotion, error) in
             guard let self = self, let motion = deviceMotion else { return }
+            if let error {
+                print("DeviceMotion error: \(error.localizedDescription)")
+                return
+            }
             
             let timestamp = self.getCurrentTimestamp()
             let accel = motion.userAcceleration
@@ -243,6 +248,16 @@ final class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             if let data = row.data(using: .utf8) {
                 self.motionFileHandle?.write(data)
             }
+        }
+
+        // 100Hz device-motion with robust reference-frame fallback.
+        let referenceFrames = CMMotionManager.availableAttitudeReferenceFrames()
+        if referenceFrames.contains(.xTrueNorthZVertical) {
+            motionManager.startDeviceMotionUpdates(using: .xTrueNorthZVertical, to: motionQueue, withHandler: handler)
+        } else if referenceFrames.contains(.xArbitraryCorrectedZVertical) {
+            motionManager.startDeviceMotionUpdates(using: .xArbitraryCorrectedZVertical, to: motionQueue, withHandler: handler)
+        } else {
+            motionManager.startDeviceMotionUpdates(to: motionQueue, withHandler: handler)
         }
     }
     
