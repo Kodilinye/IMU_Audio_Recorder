@@ -56,19 +56,15 @@ struct WatchContentView: View {
     }
     
     private var statusText: String {
-        // Recording starts immediately on tap (sensors begin sampling right away), but the
-        // `scheduledStartEpoch` is still the agreed clock-anchor between watch and iPhone
-        // for post-hoc alignment. Show the countdown until that anchor passes, even while
-        // we're already capturing IMU/audio in the background.
+        if dataRecorder.isRecording {
+            return String(format: "%.1f s", dataRecorder.elapsedTime)
+        }
+
         if let anchor = dataRecorder.scheduledStartEpoch {
             let remaining = anchor - Date().timeIntervalSince1970
             if remaining > 0 {
                 return String(format: "Starting in %.0f...", ceil(remaining))
             }
-        }
-
-        if dataRecorder.isRecording {
-            return String(format: "%.1f s", dataRecorder.elapsedTime)
         }
 
         return "\(dataRecorder.imuStatusText)\n\(dataRecorder.audioStatusText)"

@@ -24,6 +24,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     @Published var startedFromPhone = false
     
     private var timer: Timer?
+    private var scheduledStartWorkItem: DispatchWorkItem?
     // --- SIMPLIFIED: Only one file handle is needed for all motion data ---
     private var motionFileHandle: FileHandle?
     private var audioFileHandle: FileHandle?
@@ -88,10 +89,11 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     func toggleRecording() {
         print("toggle recording called")
         // `scheduledStartEpoch` is set synchronously below before we leave the main thread,
-        // so it also covers the brief permission/auth window before `isRecording` flips to
-        // true. Without this, a second tap during that window slips into the `else` branch
-        // and starts a duplicate recording.
-        if isRecording || scheduledStartEpoch != nil {
+        // so it covers the gap between tapping START and the asynchronous permission/auth
+        // flow finally creating `scheduledStartWorkItem`. Without this, a second tap during
+        // that window slips into the `else` branch and starts a duplicate recording, which
+        // later truncates the in-progress motion CSV down to just the header.
+        if isRecording || scheduledStartWorkItem != nil || scheduledStartEpoch != nil {
             stopRecording(sendStopCamera: true)
         } else {
             computeDeviceCapabilities() // Re-check sensors right before we start
@@ -145,7 +147,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     private func requestPermissionsAndStart(scheduledStartEpoch: TimeInterval) {
         print("request perms called")
         let workoutTypes: Set<HKSampleType> = [HKObjectType.workoutType()]
-
+        
         healthStore.requestAuthorization(toShare: workoutTypes, read: workoutTypes) { [weak self] success, error in
             guard let self = self else { return }
             if let error = error { print("HealthKit error: \(error.localizedDescription)") }
@@ -154,10 +156,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
                 guard let self = self else { return }
                 if granted {
                     DispatchQueue.main.async {
-                        // Start sampling NOW. `scheduledStartEpoch` stays as a clock anchor
-                        // that's stamped into the motion CSV (and the iPhone's video sidecar)
-                        // so post-processing can trim everything back to a shared t=0.
-                        self.startWorkoutSession(anchorEpoch: scheduledStartEpoch)
+                        self.scheduleStart(at: scheduledStartEpoch)
                     }
                 } else {
                     print("Microphone permission denied")
@@ -174,6 +173,17 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         }
     }
 
+    private func scheduleStart(at epoch: TimeInterval) {
+        scheduledStartWorkItem?.cancel()
+        let delay = max(0, epoch - Date().timeIntervalSince1970)
+        let work = DispatchWorkItem { [weak self] in
+            self?.scheduledStartWorkItem = nil
+            self?.startWorkoutSession(anchorEpoch: epoch)
+        }
+        scheduledStartWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     private func startWorkoutSession(anchorEpoch: TimeInterval) {
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .other
@@ -182,7 +192,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         do {
             workoutSession = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
             workoutSession?.startActivity(with: nil)
-            startDataRecording(timestamp: currentSessionTimestamp, suffix: currentFilenameSuffix, anchorEpoch: anchorEpoch)
+            startDataRecording(timestamp: currentSessionTimestamp, suffix: currentFilenameSuffix)
             isRecording = true
             startTimer(anchorEpoch: anchorEpoch)
         } catch {
@@ -192,12 +202,12 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     }
     
     // This is the main function that begins all data collection.
-    private func startDataRecording(timestamp: String, suffix: String, anchorEpoch: TimeInterval) {
-        startMotionUpdates(timestamp: timestamp, suffix: suffix, anchorEpoch: anchorEpoch)
+    private func startDataRecording(timestamp: String, suffix: String) {
+        startMotionUpdates(timestamp: timestamp, suffix: suffix)
         startAudioRecording(timestamp: timestamp, suffix: suffix)
     }
 
-    private func startMotionUpdates(timestamp: String, suffix: String, anchorEpoch: TimeInterval) {
+    private func startMotionUpdates(timestamp: String, suffix: String) {
         guard motionManager.isDeviceMotionAvailable else {
             print("Device Motion service is not available.")
             return
@@ -218,17 +228,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let motionFileURL = documentsURL.appendingPathComponent(makeMotionFileName(timestamp: timestamp, suffix: suffix))
 
-        // Comment lines are emitted before the column header so post-processing can
-        // align this CSV against the iPhone video's sidecar JSON. The watch starts
-        // sampling immediately on tap, but the agreed `scheduled_start_epoch` is the
-        // shared t=0 — trim every file back to that epoch in post.
-        let actualStartEpoch = Date().timeIntervalSince1970
-        let metadata =
-            "# scheduled_start_epoch=\(anchorEpoch)\n" +
-            "# actual_start_epoch=\(actualStartEpoch)\n" +
-            "# session_timestamp=\(timestamp)\n" +
-            "# suffix=\(suffix)\n"
-        let columns = [
+        let header = [
             "timestamp",
             "accel_x(G)", "accel_y(G)", "accel_z(G)",
             "gyro_x(rad/s)", "gyro_y(rad/s)", "gyro_z(rad/s)",
@@ -236,7 +236,6 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             "attitude_roll(rad)", "attitude_pitch(rad)", "attitude_yaw(rad)",
             "gravity_x(G)", "gravity_y(G)", "gravity_z(G)"
         ].joined(separator: ",") + "\n"
-        let header = metadata + columns
 
         do {
             // Only write the header if the file doesn't already exist. `header.write(... atomically: true ...)`
@@ -293,6 +292,8 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     // This function now stops the single device motion service.
     private func stopRecording(sendStopCamera: Bool = true) {
         let hadActiveCapture = isRecording || motionFileHandle != nil || audioFileHandle != nil
+        scheduledStartWorkItem?.cancel()
+        scheduledStartWorkItem = nil
         motionManager.stopDeviceMotionUpdates()
 
         if sendStopCamera {
@@ -468,7 +469,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             // If we already have an active or pending recording, tear it down before
             // starting a new one. Otherwise we'd run two motion handlers writing to two
             // file handles, and `audioEngine.installTap` would crash on re-install.
-            if isRecording || scheduledStartEpoch != nil {
+            if isRecording || scheduledStartWorkItem != nil || scheduledStartEpoch != nil {
                 stopRecording(sendStopCamera: false)
             }
             setCurrentFilenameSuffix(suffix)
