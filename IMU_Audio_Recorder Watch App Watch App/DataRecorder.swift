@@ -142,19 +142,20 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     private func requestPermissionsAndStart(scheduledStartEpoch: TimeInterval) {
         print("request perms called")
         let workoutTypes: Set<HKSampleType> = [HKObjectType.workoutType()]
-        
+
+        // HealthKit is best-effort: it only powers the workout session that
+        // keeps the watch awake. If it fails (e.g. capability removed, denied,
+        // or simulator), we still continue so motion + audio can record.
         healthStore.requestAuthorization(toShare: workoutTypes, read: workoutTypes) { [weak self] success, error in
             guard let self = self else { return }
-            if let error = error { print("HealthKit error: \(error.localizedDescription)") }
-            guard success else { return }
+            if let error = error { print("HealthKit error (continuing anyway): \(error.localizedDescription)") }
+            if !success { print("HealthKit auth not granted (continuing anyway)") }
+
             self.requestMicrophonePermission { [weak self] granted in
                 guard let self = self else { return }
-                if granted {
-                    DispatchQueue.main.async {
-                        self.scheduleStart(at: scheduledStartEpoch)
-                    }
-                } else {
-                    print("Microphone permission denied")
+                if !granted { print("Microphone permission denied (audio will be silent, motion will still record)") }
+                DispatchQueue.main.async {
+                    self.scheduleStart(at: scheduledStartEpoch)
                 }
             }
         }
@@ -183,17 +184,21 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .other
         configuration.locationType = .unknown
-        
+
+        // Workout session is best-effort. Without it the watch may sleep mid
+        // recording, but failing to start it must NOT prevent motion/audio
+        // capture (which is the whole point of the app).
         do {
             workoutSession = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
             workoutSession?.startActivity(with: nil)
-            startDataRecording(timestamp: currentSessionTimestamp, suffix: currentFilenameSuffix)
-            isRecording = true
-            startTimer(anchorEpoch: anchorEpoch)
         } catch {
-            print("Workout session error: \(error.localizedDescription)")
-            stopRecording(sendStopCamera: true)
+            print("Workout session error (continuing without keep-awake): \(error.localizedDescription)")
+            workoutSession = nil
         }
+
+        startDataRecording(timestamp: currentSessionTimestamp, suffix: currentFilenameSuffix)
+        isRecording = true
+        startTimer(anchorEpoch: anchorEpoch)
     }
     
     // This is the main function that begins all data collection.
@@ -341,8 +346,11 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             try audioEngine.prepare()
             try audioEngine.start()
         } catch {
-            print("Audio start error: \(error.localizedDescription)")
-            stopRecording(sendStopCamera: true)
+            print("Audio start error (motion will continue): \(error.localizedDescription)")
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioFileHandle?.closeFile()
+            audioFileHandle = nil
+            audioFileURL = nil
         }
     }
     
