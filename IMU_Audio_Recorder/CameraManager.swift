@@ -28,8 +28,10 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
     private let recordingDot = UIView()
     private let recordingLabel = UILabel()
 
-    private var scheduledWorkItem: DispatchWorkItem?
     private var lastArmedEpoch: TimeInterval?
+    /// The agreed cross-device clock anchor (watch + phone). Sampling starts as soon as
+    /// the message arrives, but this epoch is what post-processing trims everything to.
+    private var alignmentEpoch: TimeInterval?
 
     private var timestamp: String
     private var suffix: String
@@ -56,28 +58,21 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
         setupRecordingIndicator()
     }
 
-    /// Schedule `movieOutput.startRecording` at wall-clock `scheduledStartEpoch`.
+    /// Begin `movieOutput.startRecording` immediately. `scheduledStartEpoch` is kept as
+    /// metadata only — a sidecar JSON next to the .mov records both the agreed shared
+    /// clock anchor and the wall-clock time the camera actually started, so IMU and video
+    /// can be aligned offline by trimming each file back to `scheduled_start_epoch`.
     func armRecording(scheduledStartEpoch: TimeInterval) {
-        guard !movieOutput.isRecording else { return }
-        if lastArmedEpoch == scheduledStartEpoch, scheduledWorkItem != nil {
-            return
-        }
+        if movieOutput.isRecording { return }
+        if lastArmedEpoch == scheduledStartEpoch && movieOutput.isRecording { return }
         lastArmedEpoch = scheduledStartEpoch
-        scheduledWorkItem?.cancel()
-
-        let delay = max(0, scheduledStartEpoch - Date().timeIntervalSince1970)
-        let work = DispatchWorkItem { [weak self] in
-            self?.scheduledWorkItem = nil
-            self?.beginMovieRecording()
-        }
-        scheduledWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        alignmentEpoch = scheduledStartEpoch
+        beginMovieRecording()
     }
 
     func disarmRecording() {
-        scheduledWorkItem?.cancel()
-        scheduledWorkItem = nil
         lastArmedEpoch = nil
+        alignmentEpoch = nil
         stopRecording()
     }
 
@@ -144,6 +139,31 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
         return "video_\(timestamp)_\(suf).mov"
     }
 
+    private func sidecarFileName(for videoFile: String) -> String {
+        // video_<ts>.mov -> video_<ts>.alignment.json
+        let base = (videoFile as NSString).deletingPathExtension
+        return "\(base).alignment.json"
+    }
+
+    private func writeAlignmentSidecar(at directoryURL: URL, videoFileName: String, actualStartEpoch: TimeInterval) {
+        let sidecarURL = directoryURL.appendingPathComponent(sidecarFileName(for: videoFileName))
+        let payload: [String: Any] = [
+            "video_file": videoFileName,
+            "session_timestamp": timestamp,
+            "suffix": FilenameSuffixHelper.sanitize(suffix),
+            "scheduled_start_epoch": alignmentEpoch ?? 0,
+            "actual_start_epoch": actualStartEpoch,
+            "schema_version": 1
+        ]
+        do {
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: sidecarURL, options: .atomic)
+            print("--- PHONE: Wrote alignment sidecar \(sidecarURL.lastPathComponent) ---")
+        } catch {
+            print("--- PHONE: Failed to write alignment sidecar: \(error.localizedDescription) ---")
+        }
+    }
+
     private func beginMovieRecording() {
         guard captureSession.isRunning else {
             print("--- PHONE: Session not running yet, retrying... ---")
@@ -162,13 +182,19 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
             connection.videoOrientation = .portrait
         }
 
-        let outputURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(videoFileName())
+        let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        let outputURL = tempDir.appendingPathComponent(videoFileName())
         if FileManager.default.fileExists(atPath: outputURL.path) {
             try? FileManager.default.removeItem(at: outputURL)
         }
 
         print("--- PHONE: Recording starting to \(outputURL.lastPathComponent) ---")
         movieOutput.startRecording(to: outputURL, recordingDelegate: self)
+
+        // Capture wall-clock as close to the actual call as we can. The agreed
+        // `alignmentEpoch` plus this `actualStartEpoch` is all post-processing needs to
+        // align the video against the watch's IMU/audio CSV/WAV files.
+        writeAlignmentSidecar(at: tempDir, videoFileName: outputURL.lastPathComponent, actualStartEpoch: Date().timeIntervalSince1970)
 
         UIView.animate(withDuration: 0.3) {
             self.recordingDot.alpha = 1
@@ -194,6 +220,12 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
         guard let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let destinationURL = documentsURL.appendingPathComponent(outputFileURL.lastPathComponent)
 
+        // Move the alignment sidecar (if it was written when recording began) alongside
+        // the video so consumers in Documents/ see them as a pair.
+        let sidecarName = sidecarFileName(for: outputFileURL.lastPathComponent)
+        let sidecarSourceURL = outputFileURL.deletingLastPathComponent().appendingPathComponent(sidecarName)
+        let sidecarDestURL = documentsURL.appendingPathComponent(sidecarName)
+
         DispatchQueue.global(qos: .background).async {
             do {
                 if fileManager.fileExists(atPath: outputFileURL.path) {
@@ -202,6 +234,19 @@ final class CameraViewController: UIViewController, AVCaptureFileOutputRecording
                     }
                     try fileManager.moveItem(at: outputFileURL, to: destinationURL)
                     print("--- PHONE: SUCCESS! Video at: \(destinationURL.path) ---")
+
+                    if fileManager.fileExists(atPath: sidecarSourceURL.path) {
+                        if fileManager.fileExists(atPath: sidecarDestURL.path) {
+                            try? fileManager.removeItem(at: sidecarDestURL)
+                        }
+                        do {
+                            try fileManager.moveItem(at: sidecarSourceURL, to: sidecarDestURL)
+                            print("--- PHONE: Alignment sidecar at: \(sidecarDestURL.lastPathComponent) ---")
+                        } catch {
+                            print("--- PHONE: Sidecar move failed: \(error.localizedDescription) ---")
+                        }
+                    }
+
                     DispatchQueue.main.async {
                         NotificationCenter.default.post(name: .pairingFilesChanged, object: nil)
                         NotificationCenter.default.post(name: .videoRecordingFinalized, object: nil)
