@@ -288,14 +288,34 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
 
         let referenceFrames = CMMotionManager.availableAttitudeReferenceFrames()
         print("[DBG] availableAttitudeReferenceFrames raw=\(referenceFrames.rawValue)")
-        if referenceFrames.contains(.xTrueNorthZVertical) {
-            print("[DBG] starting device motion with xTrueNorthZVertical (needs location auth)")
-            motionManager.startDeviceMotionUpdates(using: .xTrueNorthZVertical, to: motionQueue, withHandler: handler)
-        } else if referenceFrames.contains(.xArbitraryCorrectedZVertical) {
-            print("[DBG] starting device motion with xArbitraryCorrectedZVertical")
-            motionManager.startDeviceMotionUpdates(using: .xArbitraryCorrectedZVertical, to: motionQueue, withHandler: handler)
-        } else {
-            print("[DBG] starting device motion with no reference frame")
+
+        // Magnetic frames (xMagneticNorthZVertical / xTrueNorthZVertical) require
+        // a working magnetometer + (for true north) location services authorization.
+        // availableAttitudeReferenceFrames() lies about availability on watches
+        // with no usable magnetometer, which causes startDeviceMotionUpdates to
+        // succeed silently but never deliver samples ("Failed to get true north").
+        // Try non-magnetic frames in order, verifying each actually activates.
+        let candidateFrames: [CMAttitudeReferenceFrame] = [
+            .xArbitraryZVertical
+        ]
+
+        var started = false
+        for frame in candidateFrames {
+            guard referenceFrames.contains(frame) else { continue }
+            motionManager.stopDeviceMotionUpdates()
+            print("[DBG] trying motion with reference frame raw=\(frame.rawValue)")
+            motionManager.startDeviceMotionUpdates(using: frame, to: motionQueue, withHandler: handler)
+            if motionManager.isDeviceMotionActive {
+                started = true
+                print("[DBG] motion ACTIVE with frame raw=\(frame.rawValue)")
+                break
+            }
+            print("[DBG] frame raw=\(frame.rawValue) did not activate, trying next")
+        }
+
+        if !started {
+            motionManager.stopDeviceMotionUpdates()
+            print("[DBG] starting motion with NO reference frame (universal fallback)")
             motionManager.startDeviceMotionUpdates(to: motionQueue, withHandler: handler)
         }
         print("[DBG] startDeviceMotionUpdates returned. isDeviceMotionActive=\(motionManager.isDeviceMotionActive)")
@@ -515,15 +535,22 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         let destinationURL = sentDirectoryURL.appendingPathComponent(fileName)
         
         do {
-            // Create the "sent_files" directory if it doesn't already exist.
             try FileManager.default.createDirectory(at: sentDirectoryURL, withIntermediateDirectories: true, attributes: nil)
-            
-            // Move the file from the main directory to the sent directory.
-            try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
-            print("Successfully archived \(fileName) to sent_files directory.")
-            
+
+            // If the destination already exists (re-confirmation of an earlier
+            // transfer), just delete the source. Otherwise move it.
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                if FileManager.default.fileExists(atPath: sourceURL.path) {
+                    try FileManager.default.removeItem(at: sourceURL)
+                    print("Source \(fileName) deleted (already archived).")
+                } else {
+                    print("\(fileName) already archived; nothing to do.")
+                }
+            } else {
+                try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+                print("Successfully archived \(fileName) to sent_files directory.")
+            }
         } catch let error as NSError where error.code == NSFileNoSuchFileError {
-            // This is not a critical error. It just means we got a confirmation for a file that was already moved.
             print("Warning: Could not find \(fileName) to archive (it may have already been moved).")
         } catch {
             print("Error archiving file \(fileName): \(error.localizedDescription)")
