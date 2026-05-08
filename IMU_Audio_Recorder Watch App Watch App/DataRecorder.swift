@@ -22,9 +22,11 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     @Published var audioStatusText: String = "Audio: "
     @Published var scheduledStartEpoch: TimeInterval?
     @Published var startedFromPhone = false
-    
+
     private var timer: Timer?
     private var scheduledStartWorkItem: DispatchWorkItem?
+    private var motionSampleCount: Int = 0
+    private var motionDebugTimer: Timer?
     // --- SIMPLIFIED: Only one file handle is needed for all motion data ---
     private var motionFileHandle: FileHandle?
     private var audioFileHandle: FileHandle?
@@ -140,7 +142,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     }
     
     private func requestPermissionsAndStart(scheduledStartEpoch: TimeInterval) {
-        print("request perms called")
+        print("[DBG] requestPermissionsAndStart called, scheduledEpoch=\(scheduledStartEpoch), now=\(Date().timeIntervalSince1970)")
         let workoutTypes: Set<HKSampleType> = [HKObjectType.workoutType()]
 
         // HealthKit is best-effort: it only powers the workout session that
@@ -148,12 +150,11 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         // or simulator), we still continue so motion + audio can record.
         healthStore.requestAuthorization(toShare: workoutTypes, read: workoutTypes) { [weak self] success, error in
             guard let self = self else { return }
-            if let error = error { print("HealthKit error (continuing anyway): \(error.localizedDescription)") }
-            if !success { print("HealthKit auth not granted (continuing anyway)") }
+            print("[DBG] HK requestAuthorization callback success=\(success) error=\(error?.localizedDescription ?? "nil")")
 
             self.requestMicrophonePermission { [weak self] granted in
                 guard let self = self else { return }
-                if !granted { print("Microphone permission denied (audio will be silent, motion will still record)") }
+                print("[DBG] mic permission granted=\(granted)")
                 DispatchQueue.main.async {
                     self.scheduleStart(at: scheduledStartEpoch)
                 }
@@ -172,7 +173,9 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     private func scheduleStart(at epoch: TimeInterval) {
         scheduledStartWorkItem?.cancel()
         let delay = max(0, epoch - Date().timeIntervalSince1970)
+        print("[DBG] scheduleStart delay=\(delay)s epoch=\(epoch)")
         let work = DispatchWorkItem { [weak self] in
+            print("[DBG] scheduled work item firing -> startWorkoutSession")
             self?.scheduledStartWorkItem = nil
             self?.startWorkoutSession(anchorEpoch: epoch)
         }
@@ -181,6 +184,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     private func startWorkoutSession(anchorEpoch: TimeInterval) {
+        print("[DBG] startWorkoutSession entered")
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .other
         configuration.locationType = .unknown
@@ -191,8 +195,9 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         do {
             workoutSession = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
             workoutSession?.startActivity(with: nil)
+            print("[DBG] workout session started OK")
         } catch {
-            print("Workout session error (continuing without keep-awake): \(error.localizedDescription)")
+            print("[DBG] Workout session error (continuing without keep-awake): \(error.localizedDescription)")
             workoutSession = nil
         }
 
@@ -208,14 +213,19 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     private func startMotionUpdates(timestamp: String, suffix: String) {
+        print("[DBG] startMotionUpdates entered. isDeviceMotionAvailable=\(motionManager.isDeviceMotionAvailable) isAccelAvail=\(motionManager.isAccelerometerAvailable) isGyroAvail=\(motionManager.isGyroAvailable) isMagAvail=\(motionManager.isMagnetometerAvailable)")
         guard motionManager.isDeviceMotionAvailable else {
-            print("Device Motion service is not available.")
+            print("[DBG] Device Motion service is not available. (Are you running on the Watch simulator? It has no IMU.)")
             return
         }
         motionManager.deviceMotionUpdateInterval = 1.0 / 100.0
 
-        guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+            print("[DBG] Could not resolve documents URL")
+            return
+        }
         let motionFileURL = documentsURL.appendingPathComponent(makeMotionFileName(timestamp: timestamp, suffix: suffix))
+        print("[DBG] motion file path: \(motionFileURL.path)")
 
         let header = [
             "timestamp",
@@ -230,22 +240,29 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             try header.write(to: motionFileURL, atomically: true, encoding: .utf8)
             motionFileHandle = try FileHandle(forWritingTo: motionFileURL)
             motionFileHandle?.seekToEndOfFile()
+            print("[DBG] motion file created with header (\(header.count) bytes)")
         } catch {
-            print("Failed to create motion file: \(error.localizedDescription)")
+            print("[DBG] Failed to create motion file: \(error.localizedDescription)")
             return
         }
 
+        motionSampleCount = 0
+
         let handler: CMDeviceMotionHandler = { [weak self] (deviceMotion, error) in
-            guard let self = self, let motion = deviceMotion else { return }
+            guard let self = self else { return }
             if let error = error {
-                print("DeviceMotion error: \(error.localizedDescription)")
+                print("[DBG] DeviceMotion error: \(error.localizedDescription)")
                 return
             }
-            
+            guard let motion = deviceMotion else {
+                print("[DBG] DeviceMotion handler fired with nil motion")
+                return
+            }
+
             let timestamp = self.getCurrentTimestamp()
             let accel = motion.userAcceleration
             let gyro = motion.rotationRate
-            let mag = motion.magneticField.field // This will now have valid data
+            let mag = motion.magneticField.field
             let attitude = motion.attitude
             let gravity = motion.gravity
 
@@ -258,23 +275,45 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
                 "\(gravity.x)", "\(gravity.y)", "\(gravity.z)"
             ].joined(separator: ",") + "\n"
 
-            if let data = row.data(using: .utf8) {
-                self.motionFileHandle?.write(data)
+            if let data = row.data(using: .utf8), let fh = self.motionFileHandle {
+                fh.write(data)
+                self.motionSampleCount += 1
+                if self.motionSampleCount == 1 {
+                    print("[DBG] FIRST motion sample written. accel=(\(accel.x),\(accel.y),\(accel.z))")
+                }
+            } else if self.motionFileHandle == nil {
+                print("[DBG] Sample arrived but motionFileHandle is nil (file already closed)")
             }
         }
 
         let referenceFrames = CMMotionManager.availableAttitudeReferenceFrames()
+        print("[DBG] availableAttitudeReferenceFrames raw=\(referenceFrames.rawValue)")
         if referenceFrames.contains(.xTrueNorthZVertical) {
+            print("[DBG] starting device motion with xTrueNorthZVertical (needs location auth)")
             motionManager.startDeviceMotionUpdates(using: .xTrueNorthZVertical, to: motionQueue, withHandler: handler)
         } else if referenceFrames.contains(.xArbitraryCorrectedZVertical) {
+            print("[DBG] starting device motion with xArbitraryCorrectedZVertical")
             motionManager.startDeviceMotionUpdates(using: .xArbitraryCorrectedZVertical, to: motionQueue, withHandler: handler)
         } else {
+            print("[DBG] starting device motion with no reference frame")
             motionManager.startDeviceMotionUpdates(to: motionQueue, withHandler: handler)
+        }
+        print("[DBG] startDeviceMotionUpdates returned. isDeviceMotionActive=\(motionManager.isDeviceMotionActive)")
+
+        DispatchQueue.main.async { [weak self] in
+            self?.motionDebugTimer?.invalidate()
+            self?.motionDebugTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                guard let self = self else { return }
+                print("[DBG] tick: samples=\(self.motionSampleCount) isDeviceMotionActive=\(self.motionManager.isDeviceMotionActive) fileHandleNil=\(self.motionFileHandle == nil)")
+            }
         }
     }
     
     // This function now stops the single device motion service.
     private func stopRecording(sendStopCamera: Bool = true) {
+        print("[DBG] stopRecording called. sendStopCamera=\(sendStopCamera) isRecording=\(isRecording) samples=\(motionSampleCount) caller=\(Thread.callStackSymbols.dropFirst().prefix(4).joined(separator: " | "))")
+        motionDebugTimer?.invalidate()
+        motionDebugTimer = nil
         let hadActiveCapture = isRecording || motionFileHandle != nil || audioFileHandle != nil
         scheduledStartWorkItem?.cancel()
         scheduledStartWorkItem = nil
