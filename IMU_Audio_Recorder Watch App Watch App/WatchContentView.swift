@@ -8,12 +8,6 @@ struct WatchContentView: View {
             Text("IMU & Audio Recorder")
                 .font(.subheadline)
 
-            if dataRecorder.startedFromPhone {
-                Text("Phone-driven")
-                    .font(.caption2.bold())
-                    .foregroundStyle(.cyan)
-            }
-
             Text(statusText)
                 .font(.system(size: 15, weight: .regular, design: .rounded))
                 .multilineTextAlignment(.center)
@@ -58,16 +52,9 @@ struct WatchContentView: View {
     private var statusText: String {
         if dataRecorder.isRecording {
             return String(format: "%.1f s", dataRecorder.elapsedTime)
+        } else {
+            return "\(dataRecorder.imuStatusText)\n\(dataRecorder.audioStatusText)"
         }
-
-        if let anchor = dataRecorder.scheduledStartEpoch {
-            let remaining = anchor - Date().timeIntervalSince1970
-            if remaining > 0 {
-                return String(format: "Starting in %.0f...", ceil(remaining))
-            }
-        }
-
-        return "\(dataRecorder.imuStatusText)\n\(dataRecorder.audioStatusText)"
     }
 }
 

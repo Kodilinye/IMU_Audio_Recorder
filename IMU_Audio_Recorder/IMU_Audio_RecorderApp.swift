@@ -2,14 +2,11 @@ import SwiftUI
 
 @main
 struct IMU_Audio_RecorderApp: App {
-    @StateObject private var connectivityManager = PhoneConnectivityManager()
-    @StateObject private var recordingSession = RecordingSessionState()
+    private var connectivityManager = PhoneConnectivityManager()
 
     var body: some Scene {
         WindowGroup {
             PhoneContentView()
-                .environmentObject(connectivityManager)
-                .environmentObject(recordingSession)
         }
     }
 }

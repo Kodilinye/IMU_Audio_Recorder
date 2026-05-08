@@ -30,14 +30,11 @@ struct ControlPage: View {
 
             Button(session.isVideoRecording ? "STOP" : "START") {
                 if session.isVideoRecording {
-                    let wasPreStartCancel = (session.scheduledStartEpoch ?? 0) > Date().timeIntervalSince1970
                     session.isVideoRecording = false
+                    session.scheduledStartEpoch = nil
+                    session.sessionTimestamp = ""
+                    session.filenameSuffix = ""
                     connectivity.sendRecordingStop()
-                    if wasPreStartCancel {
-                        session.scheduledStartEpoch = nil
-                        session.sessionTimestamp = ""
-                        session.filenameSuffix = ""
-                    }
                 } else {
                     let suf = FilenameSuffixHelper.sanitize(storedSuffix)
                     storedSuffix = suf
@@ -64,18 +61,7 @@ struct ControlPage: View {
         }
         .padding()
         .onAppear {
-            let cleaned = FilenameSuffixHelper.sanitize(storedSuffix)
-            session.filenameSuffix = cleaned
-            storedSuffix = cleaned
-            connectivity.sendSuffixUpdate(cleaned)
-        }
-        .onChange(of: storedSuffix) { newValue in
-            let cleaned = FilenameSuffixHelper.sanitize(newValue)
-            if cleaned != newValue {
-                storedSuffix = cleaned
-            }
-            session.filenameSuffix = cleaned
-            connectivity.sendSuffixUpdate(cleaned)
+            session.filenameSuffix = FilenameSuffixHelper.sanitize(storedSuffix)
         }
     }
 }

@@ -31,26 +31,26 @@ struct VideoPage: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    @ViewBuilder
     private func overlayLabel(now: TimeInterval, anchor: TimeInterval) -> some View {
         let delta = now - anchor
-        let textAndSize: (String, CGFloat) = {
-            if delta < 0 {
-                let countdown = max(1, Int(ceil(anchor - now)))
-                return ("\(countdown)", 72)
-            }
-            if delta < 0.5 {
-                return ("GO", 72)
-            }
+        let text: String
+        let fontSize: CGFloat
+
+        if delta < 0 {
+            text = "\(max(1, Int(ceil(anchor - now))))"
+            fontSize = 72
+        } else if delta < 0.5 {
+            text = "GO"
+            fontSize = 72
+        } else {
             let secs = Int(delta)
             let frac = Int((delta.truncatingRemainder(dividingBy: 1)) * 10)
-            let formatted = String(format: "%02d:%02d.%d", secs / 60, secs % 60, frac)
-            return (formatted, 44)
-        }()
+            text = String(format: "%02d:%02d.%d", secs / 60, secs % 60, frac)
+            fontSize = 44
+        }
 
-        let text = textAndSize.0
-        let fontSize = textAndSize.1
-
-        return Text(text)
+        Text(text)
             .font(.system(size: fontSize, weight: .bold, design: .rounded))
             .foregroundStyle(.white)
             .shadow(color: .black.opacity(0.7), radius: 6, x: 0, y: 2)
