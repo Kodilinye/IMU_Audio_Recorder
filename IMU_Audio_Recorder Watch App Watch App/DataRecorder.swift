@@ -29,8 +29,8 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
     private var scheduledStartWorkItem: DispatchWorkItem?
     private var motionSampleCount: Int = 0
     private var motionDebugTimer: Timer?
-    private var lastMotionSnapshot: (accel: CMAcceleration, gyro: CMRotationRate, mag: CMMagneticField, magAccuracy: Int, attitude: CMAttitude, gravity: CMAcceleration)?
-    private var lastReportedReferenceFrameRawValue: UInt32 = 0
+    private var lastMotionSnapshot: (accel: CMAcceleration, gyro: CMRotationRate, mag: CMMagneticField, magAccuracy: Int32, attitude: CMAttitude, gravity: CMAcceleration)?
+    private var lastReportedReferenceFrameRawValue: UInt = 0
     // --- SIMPLIFIED: Only one file handle is needed for all motion data ---
     private var motionFileHandle: FileHandle?
     private var audioFileHandle: FileHandle?
@@ -444,14 +444,14 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
                     self.audioFileHandle?.write(data)
                 }
             }
-            try audioEngine.prepare()
+            audioEngine.prepare()
             try audioEngine.start()
         } catch {
             print("Audio start error (motion will continue): \(error.localizedDescription)")
             audioEngine.inputNode.removeTap(onBus: 0)
             audioFileHandle?.closeFile()
             audioFileHandle = nil
-            audioFileURL = nil
+            self.audioFileURL = nil
         }
     }
     
@@ -599,7 +599,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
         }
     }
 
-    private func referenceFrameName(_ raw: UInt32) -> String {
+    private func referenceFrameName(_ raw: UInt) -> String {
         switch raw {
         case CMAttitudeReferenceFrame.xArbitraryZVertical.rawValue: return "xArbitraryZVertical (no mag)"
         case CMAttitudeReferenceFrame.xArbitraryCorrectedZVertical.rawValue: return "xArbitraryCorrectedZVertical (mag-corrected yaw)"
