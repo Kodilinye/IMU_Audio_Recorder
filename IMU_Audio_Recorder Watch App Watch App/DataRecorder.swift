@@ -305,48 +305,23 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
         }
 
         let referenceFrames = CMMotionManager.availableAttitudeReferenceFrames()
-        print("[DBG] availableAttitudeReferenceFrames raw=\(referenceFrames.rawValue)")
+        print("[DBG] availableAttitudeReferenceFrames raw=\(referenceFrames.rawValue) hasMag=\(motionManager.isMagnetometerAvailable) locationAuth=\(locationManager.authorizationStatus.rawValue)")
 
-        // Reference-frame priority (mirrors the older reference project, but
-        // with verified activation and graceful fallback):
-        //   1. xTrueNorthZVertical: needs working magnetometer + CoreLocation
-        //      auth. Gives mag data + true-north heading.
-        //   2. xMagneticNorthZVertical: needs magnetometer only, no location.
-        //   3. xArbitraryCorrectedZVertical: gyro+accel attitude, mag-corrected
-        //      yaw over time when the magnetometer is available.
-        //   4. xArbitraryZVertical: pure gyro+accel, mag stays zero.
-        // We try them in order and verify each actually activates, because
-        // availableAttitudeReferenceFrames() over-reports support on watches
-        // with no usable magnetometer.
-        let candidateFrames: [CMAttitudeReferenceFrame] = [
-            .xTrueNorthZVertical,
+        // Match the original/reference project: just ask for the magnetic
+        // frame and let samples flow. isDeviceMotionActive is unreliable
+        // immediately after start, so don't gate on it. If for some reason
+        // no samples arrive within 1 second (e.g. true-north can't be
+        // computed because the compass needs calibration or there's no GPS
+        // fix), the watchdog below will downgrade us automatically.
+        print("[DBG] starting motion with xTrueNorthZVertical (matches reference project)")
+        motionManager.startDeviceMotionUpdates(using: .xTrueNorthZVertical, to: motionQueue, withHandler: handler)
+        lastReportedReferenceFrameRawValue = CMAttitudeReferenceFrame.xTrueNorthZVertical.rawValue
+
+        scheduleMotionFallbackChain(handler: handler, remainingFrames: [
             .xMagneticNorthZVertical,
             .xArbitraryCorrectedZVertical,
             .xArbitraryZVertical
-        ]
-
-        var started = false
-        lastReportedReferenceFrameRawValue = 0
-        for frame in candidateFrames {
-            guard referenceFrames.contains(frame) else { continue }
-            motionManager.stopDeviceMotionUpdates()
-            print("[DBG] trying motion with reference frame raw=\(frame.rawValue)")
-            motionManager.startDeviceMotionUpdates(using: frame, to: motionQueue, withHandler: handler)
-            if motionManager.isDeviceMotionActive {
-                started = true
-                lastReportedReferenceFrameRawValue = frame.rawValue
-                print("[DBG] motion ACTIVE with frame raw=\(frame.rawValue) (\(referenceFrameName(frame.rawValue)))")
-                break
-            }
-            print("[DBG] frame raw=\(frame.rawValue) did not activate, trying next")
-        }
-
-        if !started {
-            motionManager.stopDeviceMotionUpdates()
-            print("[DBG] starting motion with NO reference frame (universal fallback)")
-            motionManager.startDeviceMotionUpdates(to: motionQueue, withHandler: handler)
-        }
-        print("[DBG] startDeviceMotionUpdates returned. isDeviceMotionActive=\(motionManager.isDeviceMotionActive)")
+        ])
 
         DispatchQueue.main.async { [weak self] in
             self?.motionDebugTimer?.invalidate()
@@ -599,8 +574,42 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
         }
     }
 
+    /// Watchdog: if the currently-selected reference frame fails to deliver
+    /// any motion samples within `delay` seconds, stop and try the next one.
+    /// This protects against silent failures (e.g. true-north can't be
+    /// computed) without sacrificing the ability to use the best frame in
+    /// the common case.
+    private func scheduleMotionFallbackChain(handler: @escaping CMDeviceMotionHandler,
+                                             remainingFrames: [CMAttitudeReferenceFrame],
+                                             delay: TimeInterval = 1.0) {
+        let baseline = motionSampleCount
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self = self, self.isRecording else { return }
+            if self.motionSampleCount > baseline {
+                print("[DBG] watchdog OK: \(self.motionSampleCount - baseline) samples in last \(delay)s with frame \(self.referenceFrameName(self.lastReportedReferenceFrameRawValue))")
+                return
+            }
+            print("[DBG] watchdog: zero samples in \(delay)s with frame \(self.referenceFrameName(self.lastReportedReferenceFrameRawValue)) — falling back")
+            self.motionManager.stopDeviceMotionUpdates()
+
+            if let next = remainingFrames.first {
+                print("[DBG]   -> trying \(self.referenceFrameName(next.rawValue))")
+                self.motionManager.startDeviceMotionUpdates(using: next, to: self.motionQueue, withHandler: handler)
+                self.lastReportedReferenceFrameRawValue = next.rawValue
+                self.scheduleMotionFallbackChain(handler: handler,
+                                                 remainingFrames: Array(remainingFrames.dropFirst()),
+                                                 delay: delay)
+            } else {
+                print("[DBG]   -> all frames exhausted, using no reference frame")
+                self.motionManager.startDeviceMotionUpdates(to: self.motionQueue, withHandler: handler)
+                self.lastReportedReferenceFrameRawValue = 0
+            }
+        }
+    }
+
     private func referenceFrameName(_ raw: UInt) -> String {
         switch raw {
+        case 0: return "noReferenceFrame (relative attitude, no mag)"
         case CMAttitudeReferenceFrame.xArbitraryZVertical.rawValue: return "xArbitraryZVertical (no mag)"
         case CMAttitudeReferenceFrame.xArbitraryCorrectedZVertical.rawValue: return "xArbitraryCorrectedZVertical (mag-corrected yaw)"
         case CMAttitudeReferenceFrame.xMagneticNorthZVertical.rawValue: return "xMagneticNorthZVertical (mag, no GPS)"
