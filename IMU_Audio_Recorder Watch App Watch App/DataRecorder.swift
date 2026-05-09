@@ -1,18 +1,20 @@
 // DataRecorder.swift (Using CMDeviceMotion and Your Reference Code)
 
 import AVFoundation
+import CoreLocation
 import CoreMotion
 import Foundation
 import HealthKit
 import WatchConnectivity
 
-class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
+class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationManagerDelegate {
     private static let suffixDefaultsKey = "watchFilenameSuffix"
 
     // MARK: - Properties
     private let motionManager = CMMotionManager()
     private let audioEngine = AVAudioEngine()
     private let healthStore = HKHealthStore()
+    private let locationManager = CLLocationManager()
     private var workoutSession: HKWorkoutSession?
     private let motionQueue = OperationQueue()
 
@@ -28,6 +30,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     private var motionSampleCount: Int = 0
     private var motionDebugTimer: Timer?
     private var lastMotionSnapshot: (accel: CMAcceleration, gyro: CMRotationRate, mag: CMMagneticField, magAccuracy: Int, attitude: CMAttitude, gravity: CMAcceleration)?
+    private var lastReportedReferenceFrameRawValue: UInt32 = 0
     // --- SIMPLIFIED: Only one file handle is needed for all motion data ---
     private var motionFileHandle: FileHandle?
     private var audioFileHandle: FileHandle?
@@ -40,23 +43,29 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     override init() {
         super.init()
         motionQueue.qualityOfService = .userInitiated
-        
+
         if WCSession.isSupported() {
             let session = WCSession.default
             session.delegate = self
             session.activate()
         }
-        
-        // Configure the single Device Motion service
+
         if motionManager.isDeviceMotionAvailable {
             motionManager.deviceMotionUpdateInterval = 1.0 / 100.0 // 100 Hz
+            // Allows the system to ask the user for the figure-8 calibration
+            // dance when needed; without this the magnetometer can stay
+            // uncalibrated and CMDeviceMotion.magneticField stays at zero.
+            motionManager.showsDeviceMovementDisplay = true
         }
         currentFilenameSuffix = sanitizeSuffix(UserDefaults.standard.string(forKey: Self.suffixDefaultsKey) ?? "")
-        
+
+        // Location permission is required for the xTrueNorthZVertical attitude
+        // reference frame. Without it the OS rejects the start request with
+        // "Failed to get true north" and no motion samples are delivered.
+        locationManager.delegate = self
+        locationManager.requestWhenInUseAuthorization()
+
         computeDeviceCapabilities()
-        
-        // Note: interruption handler is good practice but not included in this final version
-        // to match the request. Can be added back if needed.
     }
     
     // This function now checks raw sensor availability for the UI string, as requested.
@@ -228,14 +237,11 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         let motionFileURL = documentsURL.appendingPathComponent(makeMotionFileName(timestamp: timestamp, suffix: suffix))
         print("[DBG] motion file path: \(motionFileURL.path)")
 
-        // mag_accuracy: -1=uncalibrated, 0=low, 1=medium, 2=high.
-        // mag_x/y/z are only meaningful when accuracy >= 0 (a magnetic
-        // reference frame is in use AND the magnetometer is calibrated).
         let header = [
             "timestamp",
             "accel_x(G)", "accel_y(G)", "accel_z(G)",
             "gyro_x(rad/s)", "gyro_y(rad/s)", "gyro_z(rad/s)",
-            "mag_x(uT)", "mag_y(uT)", "mag_z(uT)", "mag_accuracy",
+            "mag_x(uT)", "mag_y(uT)", "mag_z(uT)",
             "attitude_roll(rad)", "attitude_pitch(rad)", "attitude_yaw(rad)",
             "gravity_x(G)", "gravity_y(G)", "gravity_z(G)"
         ].joined(separator: ",") + "\n"
@@ -276,7 +282,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
                 "\(timestamp)",
                 "\(accel.x)", "\(accel.y)", "\(accel.z)",
                 "\(gyro.x)", "\(gyro.y)", "\(gyro.z)",
-                "\(mag.x)", "\(mag.y)", "\(mag.z)", "\(magAccuracy)",
+                "\(mag.x)", "\(mag.y)", "\(mag.z)",
                 "\(attitude.roll)", "\(attitude.pitch)", "\(attitude.yaw)",
                 "\(gravity.x)", "\(gravity.y)", "\(gravity.z)"
             ].joined(separator: ",") + "\n"
@@ -301,24 +307,26 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         let referenceFrames = CMMotionManager.availableAttitudeReferenceFrames()
         print("[DBG] availableAttitudeReferenceFrames raw=\(referenceFrames.rawValue)")
 
-        // Reference-frame priority:
-        //   1. xMagneticNorthZVertical: real magnetometer data + magnetic-north
-        //      heading. Needs a working magnetometer (NO location auth needed).
-        //   2. xArbitraryCorrectedZVertical: gyro+accel attitude with magnetic
-        //      yaw correction over time when mag is available; mag field still
-        //      gets populated.
-        //   3. xArbitraryZVertical: pure gyro+accel attitude, mag stays zero.
-        //   (true-north skipped: needs CoreLocation auth which we don't request)
-        // We try them in order and verify each actually activates, because the
-        // OS lies in availableAttitudeReferenceFrames() on watches with no
-        // working magnetometer.
+        // Reference-frame priority (mirrors the older reference project, but
+        // with verified activation and graceful fallback):
+        //   1. xTrueNorthZVertical: needs working magnetometer + CoreLocation
+        //      auth. Gives mag data + true-north heading.
+        //   2. xMagneticNorthZVertical: needs magnetometer only, no location.
+        //   3. xArbitraryCorrectedZVertical: gyro+accel attitude, mag-corrected
+        //      yaw over time when the magnetometer is available.
+        //   4. xArbitraryZVertical: pure gyro+accel, mag stays zero.
+        // We try them in order and verify each actually activates, because
+        // availableAttitudeReferenceFrames() over-reports support on watches
+        // with no usable magnetometer.
         let candidateFrames: [CMAttitudeReferenceFrame] = [
+            .xTrueNorthZVertical,
             .xMagneticNorthZVertical,
             .xArbitraryCorrectedZVertical,
             .xArbitraryZVertical
         ]
 
         var started = false
+        lastReportedReferenceFrameRawValue = 0
         for frame in candidateFrames {
             guard referenceFrames.contains(frame) else { continue }
             motionManager.stopDeviceMotionUpdates()
@@ -326,7 +334,8 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             motionManager.startDeviceMotionUpdates(using: frame, to: motionQueue, withHandler: handler)
             if motionManager.isDeviceMotionActive {
                 started = true
-                print("[DBG] motion ACTIVE with frame raw=\(frame.rawValue)")
+                lastReportedReferenceFrameRawValue = frame.rawValue
+                print("[DBG] motion ACTIVE with frame raw=\(frame.rawValue) (\(referenceFrameName(frame.rawValue)))")
                 break
             }
             print("[DBG] frame raw=\(frame.rawValue) did not activate, trying next")
@@ -343,18 +352,20 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             self?.motionDebugTimer?.invalidate()
             self?.motionDebugTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
+                let frameName = self.referenceFrameName(self.lastReportedReferenceFrameRawValue)
                 if let s = self.lastMotionSnapshot {
                     let magMag = sqrt(s.mag.x * s.mag.x + s.mag.y * s.mag.y + s.mag.z * s.mag.z)
                     let rad2deg = 180.0 / .pi
-                    print(String(format: "[DBG] tick samples=%d active=%@ |mag|=%.2fuT (acc=%d) attRPY=(%.1f, %.1f, %.1f)deg",
+                    print(String(format: "[DBG] tick samples=%d active=%@ frame=%@ |mag|=%.2fuT (acc=%d) attRPY=(%.1f, %.1f, %.1f)deg",
                                  self.motionSampleCount,
                                  self.motionManager.isDeviceMotionActive ? "Y" : "N",
+                                 frameName,
                                  magMag, s.magAccuracy,
                                  s.attitude.roll * rad2deg,
                                  s.attitude.pitch * rad2deg,
                                  s.attitude.yaw * rad2deg))
                 } else {
-                    print("[DBG] tick samples=0 active=\(self.motionManager.isDeviceMotionActive ? "Y" : "N") (no samples yet)")
+                    print("[DBG] tick samples=0 active=\(self.motionManager.isDeviceMotionActive ? "Y" : "N") frame=\(frameName) (no samples yet)")
                 }
             }
         }
@@ -586,6 +597,20 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         } catch {
             print("Error archiving file \(fileName): \(error.localizedDescription)")
         }
+    }
+
+    private func referenceFrameName(_ raw: UInt32) -> String {
+        switch raw {
+        case CMAttitudeReferenceFrame.xArbitraryZVertical.rawValue: return "xArbitraryZVertical (no mag)"
+        case CMAttitudeReferenceFrame.xArbitraryCorrectedZVertical.rawValue: return "xArbitraryCorrectedZVertical (mag-corrected yaw)"
+        case CMAttitudeReferenceFrame.xMagneticNorthZVertical.rawValue: return "xMagneticNorthZVertical (mag, no GPS)"
+        case CMAttitudeReferenceFrame.xTrueNorthZVertical.rawValue: return "xTrueNorthZVertical (mag + GPS)"
+        default: return "unknown(\(raw))"
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
+        print("[DBG] CLLocationManager authorization status changed -> \(status.rawValue) (3=AlwaysWhenInUse-ish, 4=Always, 0=NotDetermined, 2=Denied)")
     }
 }
 extension Data { init<T>(from value: T) { var value = value; self = Swift.withUnsafeBytes(of: &value) { Data($0) } } }
