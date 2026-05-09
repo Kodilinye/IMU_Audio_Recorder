@@ -27,6 +27,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
     private var scheduledStartWorkItem: DispatchWorkItem?
     private var motionSampleCount: Int = 0
     private var motionDebugTimer: Timer?
+    private var lastMotionSnapshot: (accel: CMAcceleration, gyro: CMRotationRate, mag: CMMagneticField, magAccuracy: Int, attitude: CMAttitude, gravity: CMAcceleration)?
     // --- SIMPLIFIED: Only one file handle is needed for all motion data ---
     private var motionFileHandle: FileHandle?
     private var audioFileHandle: FileHandle?
@@ -227,11 +228,14 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         let motionFileURL = documentsURL.appendingPathComponent(makeMotionFileName(timestamp: timestamp, suffix: suffix))
         print("[DBG] motion file path: \(motionFileURL.path)")
 
+        // mag_accuracy: -1=uncalibrated, 0=low, 1=medium, 2=high.
+        // mag_x/y/z are only meaningful when accuracy >= 0 (a magnetic
+        // reference frame is in use AND the magnetometer is calibrated).
         let header = [
             "timestamp",
             "accel_x(G)", "accel_y(G)", "accel_z(G)",
             "gyro_x(rad/s)", "gyro_y(rad/s)", "gyro_z(rad/s)",
-            "mag_x(uT)", "mag_y(uT)", "mag_z(uT)",
+            "mag_x(uT)", "mag_y(uT)", "mag_z(uT)", "mag_accuracy",
             "attitude_roll(rad)", "attitude_pitch(rad)", "attitude_yaw(rad)",
             "gravity_x(G)", "gravity_y(G)", "gravity_z(G)"
         ].joined(separator: ",") + "\n"
@@ -262,7 +266,9 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             let timestamp = self.getCurrentTimestamp()
             let accel = motion.userAcceleration
             let gyro = motion.rotationRate
-            let mag = motion.magneticField.field
+            let magField = motion.magneticField
+            let mag = magField.field
+            let magAccuracy = magField.accuracy.rawValue
             let attitude = motion.attitude
             let gravity = motion.gravity
 
@@ -270,7 +276,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
                 "\(timestamp)",
                 "\(accel.x)", "\(accel.y)", "\(accel.z)",
                 "\(gyro.x)", "\(gyro.y)", "\(gyro.z)",
-                "\(mag.x)", "\(mag.y)", "\(mag.z)",
+                "\(mag.x)", "\(mag.y)", "\(mag.z)", "\(magAccuracy)",
                 "\(attitude.roll)", "\(attitude.pitch)", "\(attitude.yaw)",
                 "\(gravity.x)", "\(gravity.y)", "\(gravity.z)"
             ].joined(separator: ",") + "\n"
@@ -278,8 +284,14 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             if let data = row.data(using: .utf8), let fh = self.motionFileHandle {
                 fh.write(data)
                 self.motionSampleCount += 1
+                self.lastMotionSnapshot = (accel: accel, gyro: gyro, mag: mag, magAccuracy: magAccuracy, attitude: attitude, gravity: gravity)
                 if self.motionSampleCount == 1 {
-                    print("[DBG] FIRST motion sample written. accel=(\(accel.x),\(accel.y),\(accel.z))")
+                    print("[DBG] FIRST motion sample written.")
+                    print("[DBG]   accel=(\(accel.x), \(accel.y), \(accel.z)) G")
+                    print("[DBG]   gyro=(\(gyro.x), \(gyro.y), \(gyro.z)) rad/s")
+                    print("[DBG]   mag=(\(mag.x), \(mag.y), \(mag.z)) uT, accuracy=\(magAccuracy) (-1=uncal, 0=low, 1=med, 2=high)")
+                    print("[DBG]   attitude roll=\(attitude.roll) pitch=\(attitude.pitch) yaw=\(attitude.yaw) rad")
+                    print("[DBG]   gravity=(\(gravity.x), \(gravity.y), \(gravity.z)) G")
                 }
             } else if self.motionFileHandle == nil {
                 print("[DBG] Sample arrived but motionFileHandle is nil (file already closed)")
@@ -289,13 +301,20 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
         let referenceFrames = CMMotionManager.availableAttitudeReferenceFrames()
         print("[DBG] availableAttitudeReferenceFrames raw=\(referenceFrames.rawValue)")
 
-        // Magnetic frames (xMagneticNorthZVertical / xTrueNorthZVertical) require
-        // a working magnetometer + (for true north) location services authorization.
-        // availableAttitudeReferenceFrames() lies about availability on watches
-        // with no usable magnetometer, which causes startDeviceMotionUpdates to
-        // succeed silently but never deliver samples ("Failed to get true north").
-        // Try non-magnetic frames in order, verifying each actually activates.
+        // Reference-frame priority:
+        //   1. xMagneticNorthZVertical: real magnetometer data + magnetic-north
+        //      heading. Needs a working magnetometer (NO location auth needed).
+        //   2. xArbitraryCorrectedZVertical: gyro+accel attitude with magnetic
+        //      yaw correction over time when mag is available; mag field still
+        //      gets populated.
+        //   3. xArbitraryZVertical: pure gyro+accel attitude, mag stays zero.
+        //   (true-north skipped: needs CoreLocation auth which we don't request)
+        // We try them in order and verify each actually activates, because the
+        // OS lies in availableAttitudeReferenceFrames() on watches with no
+        // working magnetometer.
         let candidateFrames: [CMAttitudeReferenceFrame] = [
+            .xMagneticNorthZVertical,
+            .xArbitraryCorrectedZVertical,
             .xArbitraryZVertical
         ]
 
@@ -324,7 +343,19 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate {
             self?.motionDebugTimer?.invalidate()
             self?.motionDebugTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
-                print("[DBG] tick: samples=\(self.motionSampleCount) isDeviceMotionActive=\(self.motionManager.isDeviceMotionActive) fileHandleNil=\(self.motionFileHandle == nil)")
+                if let s = self.lastMotionSnapshot {
+                    let magMag = sqrt(s.mag.x * s.mag.x + s.mag.y * s.mag.y + s.mag.z * s.mag.z)
+                    let rad2deg = 180.0 / .pi
+                    print(String(format: "[DBG] tick samples=%d active=%@ |mag|=%.2fuT (acc=%d) attRPY=(%.1f, %.1f, %.1f)deg",
+                                 self.motionSampleCount,
+                                 self.motionManager.isDeviceMotionActive ? "Y" : "N",
+                                 magMag, s.magAccuracy,
+                                 s.attitude.roll * rad2deg,
+                                 s.attitude.pitch * rad2deg,
+                                 s.attitude.yaw * rad2deg))
+                } else {
+                    print("[DBG] tick samples=0 active=\(self.motionManager.isDeviceMotionActive ? "Y" : "N") (no samples yet)")
+                }
             }
         }
     }
