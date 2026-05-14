@@ -6,8 +6,9 @@ import CoreMotion
 import Foundation
 import HealthKit
 import WatchConnectivity
+import WatchKit
 
-class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationManagerDelegate {
+class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationManagerDelegate, HKWorkoutSessionDelegate {
     private static let suffixDefaultsKey = "watchFilenameSuffix"
 
     // MARK: - Properties
@@ -16,6 +17,7 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
     private let healthStore = HKHealthStore()
     private let locationManager = CLLocationManager()
     private var workoutSession: HKWorkoutSession?
+    private var extendedRuntimeSession: WKExtendedRuntimeSession?
     private let motionQueue = OperationQueue()
 
     @Published var isRecording = false
@@ -42,7 +44,12 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
 
     override init() {
         super.init()
-        motionQueue.qualityOfService = .userInitiated
+        // Raise QoS so the motion queue is treated as a foreground / interactive
+        // workload by watchOS. Combined with an active HKWorkoutSession this is
+        // what keeps CoreMotion samples flowing after the wrist drops.
+        motionQueue.qualityOfService = .userInteractive
+        motionQueue.maxConcurrentOperationCount = 1
+        motionQueue.name = "com.imuaudio.motionQueue"
 
         if WCSession.isSupported() {
             let session = WCSession.default
@@ -166,6 +173,14 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
                 guard let self = self else { return }
                 print("[DBG] mic permission granted=\(granted)")
                 DispatchQueue.main.async {
+                    // *** CRITICAL ***
+                    // Start the keep-awake workout session NOW, before the
+                    // 5-second countdown begins. Otherwise, if the user lowers
+                    // their wrist during the countdown, watchOS will suspend
+                    // the app before any sampling has a chance to start.
+                    // The actual file writing is still deferred to the
+                    // scheduled epoch so watch + phone stay in sync.
+                    self.startKeepAwakeWorkout()
                     self.scheduleStart(at: scheduledStartEpoch)
                 }
             }
@@ -180,35 +195,69 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
         }
     }
 
+    /// Starts an HKWorkoutSession (.other) right when the user/phone asks for
+    /// recording. The workout session is what grants the app extended
+    /// background runtime on watchOS; without it, lowering your wrist causes
+    /// the app to suspend within a couple of seconds and motion updates stop.
+    /// We also kick off a WKExtendedRuntimeSession as a second-line safety
+    /// net for cases where HealthKit isn't authorized.
+    private func startKeepAwakeWorkout() {
+        // If a workout is already running (e.g. user spam-pressed start), don't
+        // start a new one.
+        if workoutSession != nil { return }
+
+        let configuration = HKWorkoutConfiguration()
+        configuration.activityType = .other
+        configuration.locationType = .unknown
+
+        do {
+            let session = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
+            session.delegate = self
+            session.startActivity(with: Date())
+            workoutSession = session
+            print("[DBG] keep-awake workout session started OK (state=\(session.state.rawValue))")
+        } catch {
+            print("[DBG] Workout session failed to start, falling back to ExtendedRuntimeSession: \(error.localizedDescription)")
+            workoutSession = nil
+            startExtendedRuntimeSessionFallback()
+        }
+    }
+
+    /// Fallback path when HKWorkoutSession is unavailable (denied auth,
+    /// simulator, etc). Buys us up to ~1h of background runtime but is less
+    /// reliable than a workout session.
+    private func startExtendedRuntimeSessionFallback() {
+        if extendedRuntimeSession?.state == .running { return }
+        let session = WKExtendedRuntimeSession()
+        session.delegate = self
+        session.start()
+        extendedRuntimeSession = session
+        print("[DBG] Started WKExtendedRuntimeSession fallback")
+    }
+
     private func scheduleStart(at epoch: TimeInterval) {
         scheduledStartWorkItem?.cancel()
         let delay = max(0, epoch - Date().timeIntervalSince1970)
         print("[DBG] scheduleStart delay=\(delay)s epoch=\(epoch)")
         let work = DispatchWorkItem { [weak self] in
-            print("[DBG] scheduled work item firing -> startWorkoutSession")
+            print("[DBG] scheduled work item firing -> beginDataCapture")
             self?.scheduledStartWorkItem = nil
-            self?.startWorkoutSession(anchorEpoch: epoch)
+            self?.beginDataCapture(anchorEpoch: epoch)
         }
         scheduledStartWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func startWorkoutSession(anchorEpoch: TimeInterval) {
-        print("[DBG] startWorkoutSession entered")
-        let configuration = HKWorkoutConfiguration()
-        configuration.activityType = .other
-        configuration.locationType = .unknown
-
-        // Workout session is best-effort. Without it the watch may sleep mid
-        // recording, but failing to start it must NOT prevent motion/audio
-        // capture (which is the whole point of the app).
-        do {
-            workoutSession = try HKWorkoutSession(healthStore: healthStore, configuration: configuration)
-            workoutSession?.startActivity(with: nil)
-            print("[DBG] workout session started OK")
-        } catch {
-            print("[DBG] Workout session error (continuing without keep-awake): \(error.localizedDescription)")
-            workoutSession = nil
+    /// Called at the synchronized epoch. The workout session has already been
+    /// running for the past ~5 seconds keeping the watch alive, so we just
+    /// kick off the motion+audio file streams here.
+    private func beginDataCapture(anchorEpoch: TimeInterval) {
+        print("[DBG] beginDataCapture entered, workoutSession=\(workoutSession != nil ? "alive" : "nil")")
+        // Defensive: if for any reason the workout session wasn't started in
+        // requestPermissionsAndStart (e.g. action came in via a path that
+        // bypassed it), make sure it's running now before we touch motion.
+        if workoutSession == nil {
+            startKeepAwakeWorkout()
         }
 
         startDataRecording(timestamp: currentSessionTimestamp, suffix: currentFilenameSuffix)
@@ -298,6 +347,20 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
                     print("[DBG]   mag=(\(mag.x), \(mag.y), \(mag.z)) uT, accuracy=\(magAccuracy) (-1=uncal, 0=low, 1=med, 2=high)")
                     print("[DBG]   attitude roll=\(attitude.roll) pitch=\(attitude.pitch) yaw=\(attitude.yaw) rad")
                     print("[DBG]   gravity=(\(gravity.x), \(gravity.y), \(gravity.z)) G")
+
+                    // Sanity-check that the sensor data looks valid. These
+                    // are diagnostic prints only — they do NOT change what
+                    // is written to the CSV (still the original 16 columns).
+                    let gravNorm = sqrt(gravity.x * gravity.x + gravity.y * gravity.y + gravity.z * gravity.z)
+                    let magNorm = sqrt(mag.x * mag.x + mag.y * mag.y + mag.z * mag.z)
+                    if mag.x == 0 && mag.y == 0 && mag.z == 0 {
+                        print("[DBG]   !! magneticField is exactly zero -> compass uncalibrated. Wave the watch in a figure-8 to calibrate.")
+                    } else if magAccuracy < 0 {
+                        print("[DBG]   !! mag accuracy = -1 (uncalibrated). Values present (|mag|=\(magNorm)uT) but not trustworthy yet.")
+                    }
+                    if abs(gravNorm - 1.0) > 0.2 {
+                        print("[DBG]   !! gravity magnitude=\(gravNorm)G is far from 1G — gravity model may not be converged yet.")
+                    }
                 }
             } else if self.motionFileHandle == nil {
                 print("[DBG] Sample arrived but motionFileHandle is nil (file already closed)")
@@ -369,9 +432,22 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
             audioEngine.stop()
             audioEngine.inputNode.removeTap(onBus: 0)
         }
-        
+
+        // Release the shared audio session so other apps can use the mic.
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+        } catch {
+            print("[DBG] AVAudioSession setActive(false) failed: \(error.localizedDescription)")
+        }
+
         workoutSession?.end()
         workoutSession = nil
+
+        // Tear down the extended-runtime fallback if it was started.
+        if let ers = extendedRuntimeSession, ers.state == .running {
+            ers.invalidate()
+        }
+        extendedRuntimeSession = nil
         
         if let audioFileHandle = audioFileHandle, let _ = audioFileURL {
             updateWAVHeader(fileHandle: audioFileHandle)
@@ -398,6 +474,13 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
         audioFileURL = documentsURL.appendingPathComponent(makeAudioFileName(timestamp: timestamp, suffix: suffix))
         guard let audioFileURL = audioFileURL else { return }
         do {
+            // Configure the shared audio session for recording. Without this
+            // watchOS often denies microphone access in the background, even
+            // with the workout session keeping the app alive.
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playAndRecord, mode: .measurement, options: [])
+            try audioSession.setActive(true, options: [])
+
             audioFileHandle = createWAVFile(url: audioFileURL)
             let inputNode = audioEngine.inputNode
             let inputFormat = inputNode.outputFormat(forBus: 0)
@@ -620,6 +703,45 @@ class DataRecorder: NSObject, ObservableObject, WCSessionDelegate, CLLocationMan
 
     func locationManager(_ manager: CLLocationManager, didChangeAuthorization status: CLAuthorizationStatus) {
         print("[DBG] CLLocationManager authorization status changed -> \(status.rawValue) (3=AlwaysWhenInUse-ish, 4=Always, 0=NotDetermined, 2=Denied)")
+    }
+
+    // MARK: - HKWorkoutSessionDelegate
+    // We don't need to do anything special here, but having the delegate set
+    // (a) lets us SEE if/when watchOS ends the session for us, and
+    // (b) is required by Apple's modern workout API.
+
+    func workoutSession(_ workoutSession: HKWorkoutSession,
+                        didChangeTo toState: HKWorkoutSessionState,
+                        from fromState: HKWorkoutSessionState,
+                        date: Date) {
+        print("[DBG] workout session state \(fromState.rawValue) -> \(toState.rawValue) at \(date)")
+        // If the system ended the session out from under us while we're still
+        // supposed to be recording (e.g. low power), surface that loudly so
+        // we can diagnose in the Xcode console instead of silently going
+        // idle.
+        if toState == .ended && isRecording {
+            print("[DBG] !! workout session ended while still recording — background runtime likely revoked")
+        }
+    }
+
+    func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
+        print("[DBG] workout session failed: \(error.localizedDescription)")
+    }
+}
+
+extension DataRecorder: WKExtendedRuntimeSessionDelegate {
+    func extendedRuntimeSessionDidStart(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
+        print("[DBG] WKExtendedRuntimeSession started")
+    }
+
+    func extendedRuntimeSessionWillExpire(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
+        print("[DBG] WKExtendedRuntimeSession about to expire — recording may stop")
+    }
+
+    func extendedRuntimeSession(_ extendedRuntimeSession: WKExtendedRuntimeSession,
+                                didInvalidateWith reason: WKExtendedRuntimeSessionInvalidationReason,
+                                error: Error?) {
+        print("[DBG] WKExtendedRuntimeSession invalidated, reason=\(reason.rawValue), error=\(error?.localizedDescription ?? "nil")")
     }
 }
 extension Data { init<T>(from value: T) { var value = value; self = Swift.withUnsafeBytes(of: &value) { Data($0) } } }
