@@ -1,0 +1,35 @@
+# Local IDE state and operating-system files
+.DS_Store
+.idea/
+*.iml
+
+# Toolchains, emulator state, build caches, logs, and binaries
+.gradle/
+.kotlin/
+.tools/
+**/build/
+local.properties
+*.log
+*.apk
+*.aab
+
+# Signing credentials and local environment configuration
+*.keystore
+*.jks
+*.p12
+*.pfx
+.env
+.env.*
+
+# Generated presentation work stays separate from collector source
+.presentation-build/
+/presentation/
+
+# Never publish participant captures
+/recordings/
+/captures/
+/exports/
+
+# Python bytecode
+__pycache__/
+*.pyc

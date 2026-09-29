@@ -1,0 +1,24 @@
+{
+  "date": "2026-09-28",
+  "core_tests": 22,
+  "core_failures": 0,
+  "adapter_tests": 12,
+  "android_lint": "Both modules passed with no errors; warnings retained",
+  "emulator_compat_export_rows": 5669,
+  "emulator_compat_attitude": "All blank as designed",
+  "physical_devices_validated": false,
+  "pair_transfer_on_devices_validated": false,
+  "apks": [
+    {
+      "path": "wear/build/outputs/apk/debug/wear-debug.apk",
+      "bytes": 9077729,
+      "sha256": "c30b998f5716a92eef36d9ae9dff5568fd4cbefb52ec8dfb696e64dd280c8a0f"
+    },
+    {
+      "path": "phone/build/outputs/apk/debug/phone-debug.apk",
+      "bytes": 12763245,
+      "sha256": "d7adb5831a828580710da748af6259f4db8afd731f5a23c361856ebde2598df2"
+    }
+  ],
+  "shared_debug_signer_sha256": "c4eb05e11198aeb70bc60f5a3572fcef7593a02f2b61e9434bb6a0b5a35aa4d2"
+}

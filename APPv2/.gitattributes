@@ -1,0 +1,7 @@
+* text=auto
+
+# Preserve runnable shell scripts across Windows and Unix checkouts.
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.jar binary
