@@ -2,6 +2,22 @@
 
 Work from `APPv2`. The three Gradle modules are `core` (plain JVM Kotlin), `wear`, and `phone`. Both Android applications use application ID `org.toothbrush.collector` and the same signing key, which the Wear Data Layer requires. Install each APK on its intended device.
 
+## Install the preview APKs
+
+To try the apps without compiling, download `appv2-wear-debug.apk`, `appv2-phone-debug.apk`, and `SHA256SUMS.txt` from the [APPv2 preview release](https://github.com/Kodilinye/IMU_Audio_Recorder/releases/tag/appv2-v1.0-preview). Keep the files together. On macOS, verify them with `shasum -a 256 -c SHA256SUMS.txt`; on Linux, use `sha256sum -c SHA256SUMS.txt`.
+
+Install Android SDK Platform Tools, enable USB or wireless debugging, and run these commands from the download directory:
+
+```sh
+adb devices -l
+adb -s WATCH_SERIAL install -r appv2-wear-debug.apk
+adb -s PHONE_SERIAL install -r appv2-phone-debug.apk
+```
+
+Replace the serial placeholders with the corresponding entries from `adb devices -l`. Both apps must be installed on their intended devices. Pairing, permissions, wireless debugging and file export are described [below](#install-and-retrieve-files).
+
+These are debug builds for lab evaluation. Both APKs use the same certificate, but your own build generates a different local key. Android will reject an update signed by a different key: export recordings before uninstalling to switch builds. No private signing key is included. Hardware behavior and paired transfer still require the [physical validation checks](VALIDATION.md#remaining-physical-validation).
+
 ## Clone and prerequisites
 
 Clone the branch containing APPv2, then enter its Android project:

@@ -2,7 +2,13 @@
 
 Native Kotlin Wear OS collector and Android phone companion, independently implemented from the authoritative top-level Apple application that collected the Toothbrush dataset. APPv2 lives in its own directory; the original Apple source remains unchanged at the repository root. Research data is not included.
 
-## Build and run
+## Install the two apps
+
+Download the [APPv2 preview APKs](https://github.com/Kodilinye/IMU_Audio_Recorder/releases/tag/appv2-v1.0-preview): install `appv2-wear-debug.apk` on the Wear OS watch and `appv2-phone-debug.apk` on its paired Android phone. These development builds share one signing certificate. The download includes `SHA256SUMS.txt` for verification; no signing key or recordings are distributed.
+
+Follow [installation instructions](docs/BUILD.md#install-the-preview-apks) for ADB commands. This is a software-tested preview for lab evaluation; physical-watch and paired-transfer validation remain outstanding. Complete the [device checks](docs/VALIDATION.md#remaining-physical-validation) before using it to collect study data.
+
+## Build and run from source
 
 Clone the APPv2 branch and enter its independent Android project:
 
